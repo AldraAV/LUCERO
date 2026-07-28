@@ -4,6 +4,8 @@ from ..tools.read_tool import ReadTool
 from ..tools.write_tool import WriteTool
 from ..tools.transform_tool import TransformTool
 from ..tools.encrypt_tool import EncryptTool
+from ..tools.ppt_master_tool import PptMasterTool
+from ..tools.markitdown_tool import MarkitdownTool
 import structlog
 import sys
 
@@ -23,6 +25,8 @@ class ToolExecutor:
         self.register_tool(WriteTool())
         self.register_tool(TransformTool())
         self.register_tool(EncryptTool())
+        self.register_tool(PptMasterTool())
+        self.register_tool(MarkitdownTool())
 
     def register_tool(self, tool: Tool):
         self._tools[tool.name] = tool
