@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Body, HTTPException
-from typing import Dict, Any
-from ...schemas import ToolResponse
-from ...core.executor import ToolExecutor
+from typing import Any
+
 import structlog
+from fastapi import APIRouter, Body, HTTPException
+
+from ...core.executor import ToolExecutor
+from ...schemas import ToolResponse
 
 router = APIRouter()
 executor = ToolExecutor()
@@ -13,7 +15,7 @@ log = structlog.get_logger()
 async def execute_tool(
     platform: str,
     tool_name: str,
-    params: Dict[str, Any] = Body(...)
+    params: dict[str, Any] = Body(...)
 ):
     """Execute a tool on the specified platform."""
     

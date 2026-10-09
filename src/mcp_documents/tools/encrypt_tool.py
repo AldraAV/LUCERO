@@ -1,8 +1,10 @@
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
+
+import structlog
+
 from ..core.tools import Tool
 from ..integrations.encryption import AES256Crypto
-import structlog
 
 log = structlog.get_logger()
 
@@ -14,7 +16,7 @@ class EncryptTool(Tool):
         )
         self.crypto = AES256Crypto()
     
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         file_path = params.get("file_path")
         password = params.get("password")
         output_path = params.get("output_path")

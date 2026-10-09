@@ -6,14 +6,14 @@
 
 ## ¿Por qué este servidor es superior?
 
-| Capacidad | Editores estándar | **LUCERO** |
-|-----------|-------------------|----------------------|
-| Localización de texto | Busca string en texto plano | XPath exacto sobre nodos `<w:t>` |
-| Cambiar una palabra | Regenera el párrafo completo | Toca **solo** el nodo objetivo |
-| Formato tras edición | Puede perder negrita/color | **Zero format loss** garantizado |
-| Texto fragmentado en runs | Falla silenciosamente | Fusión automática de multi-runs |
-| Inyección APA 7ª | Texto plano sin estilos reales | XML OOXML nativo con estilos completos |
-| Reempaquetado | Riesgo de corromper el ZIP | Preserva `[Content_Types].xml` byte a byte |
+| Capacidad                 | Editores estándar              | **LUCERO**                                 |
+| ------------------------- | ------------------------------ | ------------------------------------------ |
+| Localización de texto     | Busca string en texto plano    | XPath exacto sobre nodos `<w:t>`           |
+| Cambiar una palabra       | Regenera el párrafo completo   | Toca **solo** el nodo objetivo             |
+| Formato tras edición      | Puede perder negrita/color     | **Zero format loss** garantizado           |
+| Texto fragmentado en runs | Falla silenciosamente          | Fusión automática de multi-runs            |
+| Inyección APA 7ª          | Texto plano sin estilos reales | XML OOXML nativo con estilos completos     |
+| Reempaquetado             | Riesgo de corromper el ZIP     | Preserva `[Content_Types].xml` byte a byte |
 
 ---
 
@@ -29,7 +29,7 @@
 
 ## Estructura del Proyecto
 
-```
+``` markdown
 LUCERO/
 ├── src/
 │   ├── __init__.py
@@ -68,6 +68,7 @@ pip install mcp[cli] lxml python-docx
 > 💡 **Arquitectura de 5 Capas (Tiers)**: Para ver el mapa completo de las 20+ herramientas organizadas por Tiers de funcionalidad, firmas de parámetros y casos de uso, consulta el documento principal [LUCERO_SUITE_TIERS.md](file:///C:/Users/carde/Desktop/MUACK/LUCERO_SUITE_TIERS.md) en la raíz del workspace.
 
 ### 1. `inspect_xml_tree`
+
 Devuelve el mapa estructural completo del DOCX: cada párrafo con su `paraId`,
 estilo, texto y los runs individuales con su formato real (bold, italic, etc.)
 y su XPath exacto. Esto permite que el LLM "vea" la estructura oculta antes de operar.
@@ -89,13 +90,16 @@ y su XPath exacto. Esto permite que el LLM "vea" la estructura oculta antes de o
 ```
 
 ### 2. `surgical_replace`
+
 Localiza texto mediante XPath y reemplaza **solo** el contenido de `<w:t>`,
 dejando intactas todas las etiquetas de formato (`<w:rPr>`, negrita, color, tamaño).
 Maneja automáticamente texto fragmentado en múltiples runs consecutivos.
 
 ### 3. `inject_apa_structure`
+
 Inyecta bloques XML OOXML nativos (no texto plano) en la posición exacta
 indicada por un texto de anclaje. Soporta:
+
 - `heading1/2/3` — Encabezados APA 7ª con estilos correctos
 - `body_paragraph` — Párrafo con sangría de primera línea y doble espacio
 - `figure_label` — "Figura N" en negrita + título en cursiva
@@ -103,21 +107,36 @@ indicada por un texto de anclaje. Soporta:
 - `reference` — Entrada de referencia con sangría francesa
 
 ### 4. `commit_changes`
+
 Reempaqueta el ZIP asegurando que `[Content_Types].xml`, relaciones,
 imágenes y metadatos se mantengan íntegros. Solo sobreescribe `word/document.xml`.
 
 ### 5. `list_apa_templates`
+
 Catálogo de todas las plantillas disponibles con descripción y parámetros extra.
 
 ### 6. `run_xpath`
+
 Ejecuta expresiones XPath arbitrarias sobre el `document.xml`. Para exploración
 avanzada y diagnóstico quirúrgico.
+
+### 7. Suite PPT-Master Hermana (Presentaciones y Ecuaciones)
+
+LUCERO y PPT-Master están unificados de forma nativa para control integral de presentaciones PowerPoint (.pptx) y renderizado científico:
+
+- `pptx_inspect_slides`: Inspección estructural completa de diapositivas, formas, textos, tablas y notas del orador con coordenadas métricas.
+- `pptx_surgical_replace`: Reemplazo quirúrgico de texto preservando tipografía, color y negrita sin romper el formato ni las animaciones.
+- `pptx_inject_image`: Inserción de imágenes, diagramas y esquemas con coordenadas métricas (cm) exactas en cualquier diapositiva.
+- `pptx_render_latex`: Renderizado de fórmulas LaTeX en 300 DPI con fondo transparente PNG multi-proveedor (CodeCogs, QuickLaTeX, MathPad, Wikimedia).
+- `pptx_compile_from_svg`: Compilación de diseños modulares SVG a formas editables nativas de PowerPoint (DrawingML).
+- `pptx_to_markdown`: Extracción bidireccional de presentaciones PPTX a Markdown estructurado con tablas y notas.
+- `pptx_to_svg`: Descomposición de presentaciones OOXML en archivos vectoriales SVG individuales.
 
 ---
 
 ## Flujo de Trabajo Recomendado
 
-```
+``` markdown
 1. inspect_xml_tree  → Conoce la estructura real antes de operar
 2. surgical_replace  → Corrige texto sin tocar el formato
 3. inject_apa_structure → Inserta bloques académicos donde necesites
@@ -136,7 +155,7 @@ python -m src.server
 aldradoc
 ```
 
-### Configuración en Claude Desktop (`claude_desktop_config.json`):
+### Configuración en Claude Desktop (`claude_desktop_config.json`)
 
 ```json
 {
@@ -165,12 +184,12 @@ asegurando que el servidor opere correctamente sobre documentos del mundo real.
 
 ## Namespaces ECMA-376 Clave
 
-| Prefijo | URI | Uso |
-|---------|-----|-----|
-| `w:` | `...wordprocessingml/2006/main` | Todo el contenido del documento |
-| `w14:` | `...office/word/2010/wordml` | paraId, revision tracking |
-| `r:` | `...officeDocument/2006/relationships` | Relaciones (imágenes, hyperlinks) |
-| `a:` | `...drawingml/2006/main` | Gráficos y formas |
+| Prefijo | URI                                    | Uso                               |
+| ------- | -------------------------------------- | --------------------------------- |
+| `w:`    | `...wordprocessingml/2006/main`        | Todo el contenido del documento   |
+| `w14:`  | `...office/word/2010/wordml`           | paraId, revision tracking         |
+| `r:`    | `...officeDocument/2006/relationships` | Relaciones (imágenes, hyperlinks) |
+| `a:`    | `...drawingml/2006/main`               | Gráficos y formas                 |
 
 ---
 
@@ -185,4 +204,4 @@ Puede conectarse a cualquier proyecto que necesite generar o editar reportes:
 
 ---
 
-*Construido con 🍒 para el Aldraverse. "Lo que Lupe tomó, el código lo preserva."*
+_Construido con 🍒 para el Aldraverse. "Lo que Lupe tomó, el código lo preserva."

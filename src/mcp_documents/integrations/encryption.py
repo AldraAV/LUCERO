@@ -1,11 +1,11 @@
+import os
+from pathlib import Path
+
+import structlog
 from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Random import get_random_bytes
-from Crypto.Hash import SHA256
-from pathlib import Path
-from typing import Optional
-import os
-import structlog
 
 log = structlog.get_logger()
 
@@ -23,7 +23,7 @@ class AES256Crypto:
         self,
         file_path: str,
         password: str,
-        output_path: Optional[str] = None
+        output_path: str | None = None
     ) -> str:
         """Encrypt file with AES-256-GCM."""
         
@@ -75,7 +75,7 @@ class AES256Crypto:
             
             return str(output_file)
         
-        except Exception as e:
+        except Exception:
             if output_file.exists():
                 output_file.unlink()
             raise
@@ -84,7 +84,7 @@ class AES256Crypto:
         self,
         encrypted_path: str,
         password: str,
-        output_path: Optional[str] = None
+        output_path: str | None = None
     ) -> str:
         """Decrypt AES-256-GCM file."""
         

@@ -8,3 +8,11 @@ __pycache__/
 
 node_modules/
 .venv/
+
+*.pyc
+*.pyo
+.pytest_cache/
+*.docx
+.DS_Store
+.vscode/
+*.xml

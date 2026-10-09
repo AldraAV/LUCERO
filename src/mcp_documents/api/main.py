@@ -1,6 +1,8 @@
-from fastapi import FastAPI
 from contextlib import asynccontextmanager
+
 import structlog
+from fastapi import FastAPI
+
 from ..config import settings
 from .routes import execute
 

@@ -1,10 +1,12 @@
-import aiofiles
 from pathlib import Path
+from typing import Any
+
+import aiofiles
+import structlog
 from docx import Document
 from pypdf import PdfReader
-from typing import Dict, Any
+
 from ..core.tools import Tool
-import structlog
 
 log = structlog.get_logger()
 
@@ -15,7 +17,7 @@ class ReadTool(Tool):
             description="Read any document (DOCX, PDF, MD, TXT) and extract content"
         )
     
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         file_path = params.get("file_path")
         extract_type = params.get("extract_type", "full_text")
         

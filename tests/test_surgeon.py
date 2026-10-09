@@ -5,30 +5,27 @@ Usa el archivo Caso_practico_u3_FINAL.docx como fixture de prueba real.
 
 from __future__ import annotations
 
-import copy
 import shutil
-import tempfile
+
+# Ajuste de path para imports relativos
+import sys
 from pathlib import Path
 
 import pytest
 from lxml import etree
 
-# Ajuste de path para imports relativos
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.surgeon import DocxSurgeon
 from src.apa_templates import (
-    apa_heading1,
-    apa_heading2,
+    apa_body_paragraph,
     apa_figure_label,
     apa_figure_note,
-    apa_reference_entry,
-    apa_body_paragraph,
+    apa_heading1,
     apa_in_text_citation,
+    apa_reference_entry,
 )
-from src.utils import NS, qn
-
+from src.surgeon import DocxSurgeon
+from src.utils import qn
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FIXTURE: copia temporal del DOCX real
@@ -36,13 +33,55 @@ from src.utils import NS, qn
 REAL_DOCX = Path(r"C:\Users\carde\Desktop\MUACK\Caso_practico_u3_FINAL.docx")
 
 
+def _crear_docx_sintetico(destino: Path) -> Path:
+    import zipfile
+    content_types = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"""
+    rels = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+    doc_rels = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"""
+    doc_xml = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
+  <w:body>
+    <w:p w14:paraId="12345678">
+      <w:pPr>
+        <w:pStyle w:val="Normal"/>
+        <w:jc w:val="both"/>
+      </w:pPr>
+      <w:r><w:rPr><w:b/></w:rPr><w:t>Etiqueta en negrita:</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> Texto normal con datos viejos.</w:t></w:r>
+    </w:p>
+    <w:p w14:paraId="87654321">
+      <w:r><w:t>Repetido aqui y Repetido alla.</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t>Texto de parrafo tercero largo para pruebas de inspeccion.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+    with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("word/_rels/document.xml.rels", doc_rels)
+        z.writestr("word/document.xml", doc_xml)
+    return destino
+
+
 @pytest.fixture
 def tmp_docx(tmp_path: Path) -> Path:
-    """Copia el DOCX real a un directorio temporal para no modificar el original."""
-    if not REAL_DOCX.exists():
-        pytest.skip(f"Archivo de prueba no encontrado: {REAL_DOCX}")
+    """Copia el DOCX real o genera uno sintético válido para pruebas."""
     dest = tmp_path / "test.docx"
-    shutil.copy2(REAL_DOCX, dest)
+    if REAL_DOCX.exists():
+        shutil.copy2(REAL_DOCX, dest)
+    else:
+        _crear_docx_sintetico(dest)
     return dest
 
 
@@ -273,14 +312,162 @@ class TestApaTemplates:
 class TestXPath:
     def test_find_by_xpath_body(self, surgeon: DocxSurgeon):
         """XPath básico debe encontrar el body."""
-        results = surgeon.find_by_xpath(
-            f"//{{{NS['w']}}}body"
-        )
+        results = surgeon.find_by_xpath("//w:body")
         assert len(results) == 1
 
     def test_find_paragraphs(self, surgeon: DocxSurgeon):
         """Debe encontrar al menos un párrafo."""
-        results = surgeon.find_by_xpath(
-            f"//{{{NS['w']}}}p"
-        )
+        results = surgeon.find_by_xpath("//w:p")
         assert len(results) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TESTS: Motor de desplazamientos, clonación y lotes atómicos (Zero format loss)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMotorDesplazamientosYClonado:
+    def test_reemplazo_no_destruye_negrita_etiqueta(self, surgeon: DocxSurgeon):
+        """
+        Al reemplazar texto normal en 'Etiqueta en negrita: Texto normal...',
+        la etiqueta debe mantenerse en negrita y el nuevo texto NO debe volverse negrita.
+        """
+        resultado = surgeon.surgical_replace(
+            target_text="Texto normal con datos viejos.",
+            replacement_text="Texto normal con datos NUEVOS actualizados.",
+        )
+        assert resultado["occurrences_replaced"] == 1
+
+        body = surgeon.tree.find(qn("w", "body"))
+        p = body.findall(f".//{qn('w', 'p')}")[0]
+        runs = p.findall(qn("w", "r"))
+
+        # El primer run (Etiqueta en negrita:) debe seguir teniendo w:b
+        rpr0 = runs[0].find(qn("w", "rPr"))
+        assert rpr0 is not None and rpr0.find(qn("w", "b")) is not None
+        assert "Etiqueta en negrita:" in (runs[0].find(qn("w", "t")).text or "")
+
+        # El segundo run NO debe tener w:b
+        rpr1 = runs[1].find(qn("w", "rPr"))
+        b1 = rpr1.find(qn("w", "b")) if rpr1 is not None else None
+        assert b1 is None
+        assert "datos NUEVOS" in (runs[1].find(qn("w", "t")).text or "")
+
+    def test_occurrence_exacta(self, surgeon: DocxSurgeon):
+        """occurrence=2 debe reemplazar ÚNICAMENTE la segunda aparición."""
+        res = surgeon.surgical_replace(
+            target_text="Repetido",
+            replacement_text="UNICO",
+            occurrence=2,
+        )
+        assert res["occurrences_found"] == 2
+        assert res["occurrences_replaced"] == 1
+        # El texto del párrafo debe ser "Repetido aqui y UNICO alla."
+        body = surgeon.tree.find(qn("w", "body"))
+        p1 = body.findall(f".//{qn('w', 'p')}")[1]
+        texto = surgeon.texto_parrafo(p1)
+        assert texto == "Repetido aqui y UNICO alla."
+
+    def test_insertar_parrafo_clonado(self, surgeon: DocxSurgeon):
+        """insertar_parrafo_clonado clona pPr y hereda formato de runs."""
+        res = surgeon.insertar_parrafo_clonado(
+            texto_ancla="Etiqueta en negrita:",
+            segmentos=["Nueva viñeta:", " contenido clonado."],
+            posicion="despues",
+        )
+        assert res["success"] is True
+
+        body = surgeon.tree.find(qn("w", "body"))
+        parrafos = body.findall(f".//{qn('w', 'p')}")
+        assert len(parrafos) >= 4
+        nuevo_p = parrafos[1]
+
+        # Verificar que heredo w:jc both de pPr
+        ppr = nuevo_p.find(qn("w", "pPr"))
+        assert ppr is not None
+        jc = ppr.find(qn("w", "jc"))
+        assert jc is not None and jc.get(qn("w", "val")) == "both"
+
+        # Verificar que el segmento 0 tiene negrita y el 1 no
+        runs = nuevo_p.findall(qn("w", "r"))
+        assert len(runs) == 2
+        rpr0 = runs[0].find(qn("w", "rPr"))
+        assert rpr0 is not None and rpr0.find(qn("w", "b")) is not None
+        assert runs[0].find(qn("w", "t")).text == "Nueva viñeta:"
+
+        rpr1 = runs[1].find(qn("w", "rPr"))
+        b1 = rpr1.find(qn("w", "b")) if rpr1 is not None else None
+        assert b1 is None
+
+    def test_aplicar_lote_atomico_fallo_no_escribe(self, surgeon: DocxSurgeon):
+        """Si una operación falla, aplicar_lote descarta todo y dirty es False."""
+        operaciones = [
+            {"tipo": "reemplazar", "objetivo": "Etiqueta en negrita:", "reemplazo": "Cambio preliminar"},
+            {"tipo": "reemplazar", "objetivo": "TEXTO_QUE_JAMAS_EXISTE", "reemplazo": "Falla"},
+        ]
+        res = surgeon.aplicar_lote(operaciones)
+        assert res["exito"] is False
+        assert res["fallo_en"] == 2
+        assert surgeon._dirty is False
+        # El documento original debe estar intacto
+        body = surgeon.tree.find(qn("w", "body"))
+        p0 = body.findall(f".//{qn('w', 'p')}")[0]
+        assert "Etiqueta en negrita:" in surgeon.texto_parrafo(p0)
+
+    def test_commit_genera_respaldo(self, surgeon: DocxSurgeon, tmp_path: Path):
+        """commit_changes sobreescribiendo el original genera archivo de respaldo."""
+        surgeon.surgical_replace("datos viejos", "datos respaldados")
+        res = surgeon.commit_changes()
+        assert res["committed"] is True
+        assert res["backup_path"] is not None
+        assert Path(res["backup_path"]).exists()
+
+    def test_ensamblar_plantilla_maestra_sintetica(self, tmp_path: Path):
+        """ensamblar_plantilla_maestra une portada, preserva índice e inyecta cuerpo."""
+        p_plantilla = tmp_path / "plantilla.docx"
+        p_hoja = tmp_path / "hoja.docx"
+        p_cuerpo = tmp_path / "cuerpo.docx"
+
+        # Crear docx auxiliares sintéticos
+        _crear_docx_sintetico(p_plantilla)
+        _crear_docx_sintetico(p_hoja)
+        _crear_docx_sintetico(p_cuerpo)
+
+        # Configurar plantilla con Índice y Resumen
+        s_pl = DocxSurgeon(p_plantilla)
+        s_pl.surgical_replace("Etiqueta en negrita:", "Portada vieja")
+        s_pl.surgical_replace("Repetido aqui y Repetido alla.", "Índice de materias")
+        s_pl.surgical_replace("Texto de parrafo tercero largo para pruebas de inspeccion.", "Resumen viejo")
+        s_pl.commit_changes()
+
+        # Configurar cuerpo con Resumen nuevo y texto EmpleaTEC
+        s_cu = DocxSurgeon(p_cuerpo)
+        s_cu.surgical_replace("Etiqueta en negrita:", "Resumen")
+        s_cu.surgical_replace("Texto normal con datos viejos.", " El proyecto EmpleaTEC inicia aqui.")
+        s_cu.commit_changes()
+
+        # Ejecutar ensamblado en s_pl
+        cirujano = DocxSurgeon(p_plantilla)
+        res = cirujano.ensamblar_plantilla_maestra(
+            ruta_hoja_presentacion=p_hoja,
+            ruta_contenido_cuerpo=p_cuerpo,
+            ancla_indice="Índice",
+            ancla_cuerpo_destino="Resumen viejo",
+            ancla_cuerpo_origen="Resumen",
+            identificador_cuerpo_origen="EmpleaTEC",
+        )
+        assert res["success"] is True
+        assert res["cuerpo_elementos"] >= 1
+        commit = cirujano.commit_changes()
+        assert commit["committed"] is True
+
+    def test_exportar_a_markdown(self, surgeon: DocxSurgeon, tmp_path: Path):
+        """exportar_a_markdown genera archivo Markdown sin alterar el DOCX original."""
+        salida_md = tmp_path / "resultado.md"
+        res = surgeon.exportar_a_markdown(salida_md)
+        assert res["success"] is True
+        assert salida_md.exists()
+        assert salida_md.stat().st_size > 0
+        contenido = salida_md.read_text(encoding="utf-8")
+        assert len(contenido) > 0
+        assert surgeon.path.exists()
+

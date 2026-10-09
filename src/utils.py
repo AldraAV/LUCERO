@@ -22,6 +22,7 @@ NS: dict[str, str] = {
     "mc":  "http://schemas.openxmlformats.org/markup-compatibility/2006",
     "ct":  "http://schemas.openxmlformats.org/package/2006/content-types",
     "cp":  "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
+    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
     "v":   "urn:schemas-microsoft-com:vml",
     "wp":  "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
 }
@@ -89,3 +90,57 @@ def validate_docx(path: Path) -> None:
         raise ValueError(f"Archivo no encontrado: {path}")
     if path.suffix.lower() != ".docx":
         raise ValueError(f"No es un archivo .docx: {path}")
+import yaml
+
+
+def export_toon(data: dict | list) -> str:
+    """
+    Exporta datos en formato Hibrido YAML+TOON para maxima eficiencia de tokens en LLMs.
+    Las listas de objetos uniformes se tabularizan.
+    Los escalares/diccionarios planos van al frontmatter YAML.
+    """
+    if isinstance(data, list):
+        if not data:
+            return ""
+        if isinstance(data[0], dict):
+            # Es un array de objetos uniformes, lo volvemos un TOON block
+            out = ["# TOON format\n"]
+            keys = list(data[0].keys())
+            for item in data:
+                out.append(f"## {keys[0]}: {item.get(keys[0], 'N/A')}\n")
+                for k in keys[1:]:
+                    out.append(f"{k}: {item.get(k)}\n")
+                out.append("\n")
+            return "".join(out)
+        else:
+            # Lista simple
+            return yaml.dump(data, sort_keys=False, allow_unicode=True)
+            
+    elif isinstance(data, dict):
+        metadata = {}
+        toon_blocks = []
+        
+        for k, v in data.items():
+            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                toon_blocks.append((k, v))
+            else:
+                metadata[k] = v
+                
+        out = []
+        if metadata:
+            out.append("---")
+            out.append(yaml.dump(metadata, sort_keys=False, allow_unicode=True).strip())
+            out.append("---")
+            
+        for k, v in toon_blocks:
+            out.append(f"\n# TOON format: {k}\n")
+            keys = list(v[0].keys())
+            for item in v:
+                out.append(f"## {keys[0]}: {item.get(keys[0], 'N/A')}\n")
+                for sub_k in keys[1:]:
+                    out.append(f"{sub_k}: {item.get(sub_k)}\n")
+                out.append("\n")
+                
+        return "\n".join(out)
+    else:
+        return str(data)

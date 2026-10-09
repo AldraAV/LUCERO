@@ -3,11 +3,13 @@ herramientas_elite.py — Módulo de procesamiento inteligente y análisis
 de documentos de nivel Élite (Tiers 1-5).
 """
 
-import os
 import json
+import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
+
 import httpx
+
 from .mcp_documents.tools.read_tool import ReadTool
 from .utils import get_logger
 
@@ -25,7 +27,12 @@ def cargar_env():
                     if linea and not linea.startswith("#") and "=" in linea:
                         clave, valor = linea.split("=", 1)
                         os.environ[clave.strip()] = valor.strip()
-            log.info("Variasync def consultar_gemini(prompt_sistema: str, prompt_usuario: str, max_tokens: int = 3000, temperature: float = 0.2) -> str:
+            log.info("Variables de entorno cargadas.")
+
+# Llamar a cargar_env al iniciar el módulo
+cargar_env()
+
+async def consultar_gemini(prompt_sistema: str, prompt_usuario: str, max_tokens: int = 3000, temperature: float = 0.2) -> str:
     """Realiza una consulta a la API de Gemini usando gemini-2.5-flash."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -112,7 +119,7 @@ async def consultar_llm(
     prompt_usuario: str,
     max_tokens: int = 3000,
     temperature: float = 0.2,
-    ctx: Optional[Any] = None
+    ctx: Any | None = None
 ) -> str:
     """Consulta a un LLM: intenta Gemini, luego Groq, y finalmente Sampling si hay contexto de MCP."""
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -134,7 +141,7 @@ async def consultar_llm(
     if ctx and hasattr(ctx, "session") and ctx.session:
         log.info("Usando Sampling en el cliente MCP.")
         try:
-            import mcp.types as types
+            from mcp import types
             # Mensajes de muestreo
             mensajes = [
                 types.SamplingMessage(
@@ -178,7 +185,7 @@ async def consultar_llm(
             log.error("Fallo crítico en Sampling MCP: %s", e, exc_info=True)
             raise ValueError(f"Fallo al invocar Sampling en el agente: {e}")
 
-    raise ValueError("Falta GEMINI_API_KEY o GROQ_API_KEY en variables de entorno y no hay Contexto de Sampling activo.")e entorno y no hay Contexto de Sampling activo.")
+    raise ValueError("Falta GEMINI_API_KEY o GROQ_API_KEY en variables de entorno y no hay Contexto de Sampling activo.")
 
 
 async def leer_texto_documento(ruta_archivo: str) -> str:
@@ -194,7 +201,7 @@ async def leer_texto_documento(ruta_archivo: str) -> str:
 # TIER 1: ANÁLISIS INTELIGENTE
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def comparar_documentos_impl(rutas_documentos: list[str], ctx: Optional[Any] = None) -> dict[str, Any]:
+async def comparar_documentos_impl(rutas_documentos: list[str], ctx: Any | None = None) -> dict[str, Any]:
     """Compara múltiples documentos para identificar conflictos, consistencias y vacíos."""
     textos = []
     for ruta in rutas_documentos:
@@ -231,7 +238,7 @@ async def comparar_documentos_impl(rutas_documentos: list[str], ctx: Optional[An
         }
 
 
-async def extraer_selectivo_impl(ruta_documento: str, tipo_extraccion: str, ctx: Optional[Any] = None) -> dict[str, Any]:
+async def extraer_selectivo_impl(ruta_documento: str, tipo_extraccion: str, ctx: Any | None = None) -> dict[str, Any]:
     """Extrae selectivamente elementos específicos (dates, tables, metadata, names, custom)."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -261,7 +268,7 @@ async def extraer_selectivo_impl(ruta_documento: str, tipo_extraccion: str, ctx:
         return {"datos_extraidos": respuesta}
 
 
-async def detectar_conflictos_impl(rutas_documentos: list[str], ctx: Optional[Any] = None) -> list[dict[str, Any]]:
+async def detectar_conflictos_impl(rutas_documentos: list[str], ctx: Any | None = None) -> list[dict[str, Any]]:
     """Detecta contradicciones entre múltiples documentos e identifica las fuentes."""
     textos = []
     for ruta in rutas_documentos:
@@ -288,7 +295,7 @@ async def detectar_conflictos_impl(rutas_documentos: list[str], ctx: Optional[An
         return [{"conflicto": "Error de parseo", "respuesta_cruda": respuesta}]
 
 
-async def generar_resumen_impl(ruta_documento: str, tipo_resumen: str = "executive", ctx: Optional[Any] = None) -> str:
+async def generar_resumen_impl(ruta_documento: str, tipo_resumen: str = "executive", ctx: Any | None = None) -> str:
     """Genera un resumen en español: ejecutivo, detallado o en viñetas."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -310,7 +317,7 @@ async def generar_resumen_impl(ruta_documento: str, tipo_resumen: str = "executi
 # TIER 2: GENERACIÓN AUTOMÁTICA
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def crear_checklist_impl(ruta_documento: str, ctx: Optional[Any] = None) -> dict[str, Any]:
+async def crear_checklist_impl(ruta_documento: str, ctx: Any | None = None) -> dict[str, Any]:
     """Crea una lista interactiva de tareas basada en obligaciones, compromisos o guías en el documento."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -329,7 +336,7 @@ async def crear_checklist_impl(ruta_documento: str, ctx: Optional[Any] = None) -
         return {"tareas": [], "respuesta_cruda": respuesta}
 
 
-async def extraer_cronograma_impl(ruta_documento: str, ctx: Optional[Any] = None) -> list[dict[str, Any]]:
+async def extraer_cronograma_impl(ruta_documento: str, ctx: Any | None = None) -> list[dict[str, Any]]:
     """Extrae hitos y fechas en orden cronológico."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -348,7 +355,7 @@ async def extraer_cronograma_impl(ruta_documento: str, ctx: Optional[Any] = None
         return [{"evento": "Error de procesamiento", "respuesta_cruda": respuesta}]
 
 
-async def generar_rubrica_impl(ruta_documento: str, ctx: Optional[Any] = None) -> dict[str, Any]:
+async def generar_rubrica_impl(ruta_documento: str, ctx: Any | None = None) -> dict[str, Any]:
     """Crea una rúbrica de evaluación con criterios, niveles de desempeño y puntajes basados en una guía o examen."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -367,7 +374,7 @@ async def generar_rubrica_impl(ruta_documento: str, ctx: Optional[Any] = None) -
         return {"criterios": [], "respuesta_cruda": respuesta}
 
 
-async def fusion_inteligente_impl(rutas_documentos: list[str], ctx: Optional[Any] = None) -> str:
+async def fusion_inteligente_impl(rutas_documentos: list[str], ctx: Any | None = None) -> str:
     """Combina información de varios documentos en un solo resumen unificado libre de duplicados."""
     textos = []
     for i, ruta in enumerate(rutas_documentos):
@@ -389,7 +396,7 @@ async def fusion_inteligente_impl(rutas_documentos: list[str], ctx: Optional[Any
 # TIER 3: VALIDACIÓN Y CALIDAD
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def validar_estructura_impl(ruta_documento: str, ctx: Optional[Any] = None) -> dict[str, Any]:
+async def validar_estructura_impl(ruta_documento: str, ctx: Any | None = None) -> dict[str, Any]:
     """Evalúa si un documento sigue la estructura correcta formal y de estilo."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -408,7 +415,7 @@ async def validar_estructura_impl(ruta_documento: str, ctx: Optional[Any] = None
         return {"error": "Error al analizar", "respuesta_cruda": respuesta}
 
 
-async def calidad_ocr_impl(ruta_documento: str, ctx: Optional[Any] = None) -> dict[str, Any]:
+async def calidad_ocr_impl(ruta_documento: str, ctx: Any | None = None) -> dict[str, Any]:
     """Analiza si el texto extraído del documento contiene ruido de OCR (caracteres basura, mala segmentación)."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -440,7 +447,7 @@ async def calidad_ocr_impl(ruta_documento: str, ctx: Optional[Any] = None) -> di
         return {"puntuacion_calidad": 50, "error": "No se pudo parsear", "respuesta_cruda": respuesta}
 
 
-async def mapa_referencias_impl(rutas_documentos: list[str], ctx: Optional[Any] = None) -> dict[str, Any]:
+async def mapa_referencias_impl(rutas_documentos: list[str], ctx: Any | None = None) -> dict[str, Any]:
     """Mapea referencias y menciones cruzadas entre documentos."""
     referencias = {}
     for ruta in rutas_documentos:
@@ -466,7 +473,7 @@ async def mapa_referencias_impl(rutas_documentos: list[str], ctx: Optional[Any] 
         return {"relaciones": [], "respuesta_cruda": respuesta}
 
 
-async def verificacion_completitud_impl(ruta_documento: str, secciones_esperadas: list[str], ctx: Optional[Any] = None) -> dict[str, Any]:
+async def verificacion_completitud_impl(ruta_documento: str, secciones_esperadas: list[str], ctx: Any | None = None) -> dict[str, Any]:
     """Verifica si el documento tiene las secciones exigidas por una plantilla o directiva."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -494,7 +501,7 @@ async def verificacion_completitud_impl(ruta_documento: str, secciones_esperadas
 # TIER 4: AUTOMATIZACIÓN AVANZADA
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def procesar_lote_impl(ruta_carpeta: str, operacion: str, filtro_extension: str = "*", ctx: Optional[Any] = None) -> dict[str, Any]:
+async def procesar_lote_impl(ruta_carpeta: str, operacion: str, filtro_extension: str = "*", ctx: Any | None = None) -> dict[str, Any]:
     """Procesa recursivamente todos los documentos en una carpeta aplicando una acción común."""
     carpeta = Path(ruta_carpeta)
     if not carpeta.is_dir():
@@ -518,11 +525,11 @@ async def procesar_lote_impl(ruta_carpeta: str, operacion: str, filtro_extension
                 res = await generar_resumen_impl(str(archivo), "executive", ctx=ctx)
                 resultados[archivo.name] = {"resumen": res}
             elif operacion == "cronograma":
-                res = await extraer_cronograma_impl(str(archivo), ctx=ctx)
-                resultados[archivo.name] = {"cronograma": res}
+                res_cron = await extraer_cronograma_impl(str(archivo), ctx=ctx)
+                resultados[archivo.name] = {"cronograma": res_cron}
             elif operacion == "calidad":
-                res = await calidad_ocr_impl(str(archivo), ctx=ctx)
-                resultados[archivo.name] = {"calidad": res}
+                res_cal = await calidad_ocr_impl(str(archivo), ctx=ctx)
+                resultados[archivo.name] = {"calidad": res_cal}
             else:
                 resultados[archivo.name] = {"error": f"Operación '{operacion}' no soportada en procesamiento por lotes."}
         except Exception as e:
@@ -537,7 +544,7 @@ async def procesar_lote_impl(ruta_carpeta: str, operacion: str, filtro_extension
     }
 
 
-async def seguimiento_versiones_impl(ruta_doc1: str, ruta_doc2: str, ctx: Optional[Any] = None) -> dict[str, Any]:
+async def seguimiento_versiones_impl(ruta_doc1: str, ruta_doc2: str, ctx: Any | None = None) -> dict[str, Any]:
     """Compara detalladamente dos versiones de un documento para extraer diferencias conceptuales."""
     doc1 = await leer_texto_documento(ruta_doc1)
     doc2 = await leer_texto_documento(ruta_doc2)
@@ -560,7 +567,7 @@ async def seguimiento_versiones_impl(ruta_doc1: str, ruta_doc2: str, ctx: Option
         return {"cambios": [], "respuesta_cruda": respuesta}
 
 
-async def crear_indice_impl(ruta_documento: str, ctx: Optional[Any] = None) -> dict[str, Any]:
+async def crear_indice_impl(ruta_documento: str, ctx: Any | None = None) -> dict[str, Any]:
     """Crea una lista detallada de temas clave con su explicación."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -579,7 +586,7 @@ async def crear_indice_impl(ruta_documento: str, ctx: Optional[Any] = None) -> d
         return {"indice_temas": [], "respuesta_cruda": respuesta}
 
 
-async def extraer_relaciones_impl(rutas_documentos: list[str], ctx: Optional[Any] = None) -> dict[str, Any]:
+async def extraer_relaciones_impl(rutas_documentos: list[str], ctx: Any | None = None) -> dict[str, Any]:
     """Genera un grafo JSON estructurado de personas, organizaciones, fechas y sus lazos."""
     textos = []
     for ruta in rutas_documentos:
@@ -609,7 +616,7 @@ async def extraer_relaciones_impl(rutas_documentos: list[str], ctx: Optional[Any
 # TIER 5: GENERACIÓN INTELIGENTE
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def generar_preguntas_respuestas_impl(ruta_documento: str, ctx: Optional[Any] = None) -> list[dict[str, Any]]:
+async def generar_preguntas_respuestas_impl(ruta_documento: str, ctx: Any | None = None) -> list[dict[str, Any]]:
     """Genera preguntas y respuestas conceptuales de autoevaluación."""
     contenido = await leer_texto_documento(ruta_documento)
     
@@ -628,7 +635,7 @@ async def generar_preguntas_respuestas_impl(ruta_documento: str, ctx: Optional[A
         return [{"pregunta": "Error al generar", "respuesta_esperada": respuesta}]
 
 
-async def briefing_ejecutivo_impl(rutas_documentos: list[str], ctx: Optional[Any] = None) -> str:
+async def briefing_ejecutivo_impl(rutas_documentos: list[str], ctx: Any | None = None) -> str:
     """Genera un reporte consolidado ultra-condensado de 1 página."""
     textos = []
     for ruta in rutas_documentos:

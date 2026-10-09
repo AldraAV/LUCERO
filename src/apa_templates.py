@@ -28,7 +28,13 @@ def _make_run(text: str, bold: bool = False, italic: bool = False,
         etree.SubElement(rpr, _w("b"))
     if italic:
         etree.SubElement(rpr, _w("i"))
+
     sz = etree.SubElement(rpr, _w("sz"))
+    rFonts = etree.SubElement(rpr, _w("rFonts"))
+    rFonts.set(_w("ascii"), "Times New Roman")
+    rFonts.set(_w("hAnsi"), "Times New Roman")
+    rFonts.set(_w("cs"), "Times New Roman")
+
     sz.set(_w("val"), str(font_size_half))
     sz_cs = etree.SubElement(rpr, _w("szCs"))
     sz_cs.set(_w("val"), str(font_size_half))
@@ -115,10 +121,10 @@ def apa_body_paragraph(text: str, first_line_indent: int = 720) -> etree._Elemen
     ind = etree.SubElement(ppr, _w("ind"))
     ind.set(_w("firstLine"), str(first_line_indent))
     jc = etree.SubElement(ppr, _w("jc"))
-    jc.set(_w("val"), "both")
+    jc.set(_w("val"), "left")
     spacing = etree.SubElement(ppr, _w("spacing"))
     spacing.set(_w("line"), "480")       # Doble espacio = 24pt = 480 twips
-    spacing.set(_w("lineRule"), "exact")
+    spacing.set(_w("lineRule"), "auto")
     spacing.set(_w("after"), "0")
     para.append(_make_run(text))
     log.debug("apa_body_paragraph generado (%d chars)", len(text))

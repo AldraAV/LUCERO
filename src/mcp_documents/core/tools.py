@@ -1,9 +1,9 @@
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
-from pydantic import BaseModel
-import time
-import structlog
 import sys
+import time
+from abc import ABC, abstractmethod
+from typing import Any
+
+import structlog
 
 structlog.configure(
     logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
@@ -19,11 +19,10 @@ class Tool(ABC):
         self.description = description
     
     @abstractmethod
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute the tool. Must return dict with 'success', 'data', 'error'."""
-        pass
     
-    async def execute_with_timing(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_with_timing(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute with timing & logging."""
         start = time.time()
         try:
@@ -51,7 +50,7 @@ class Tool(ABC):
             )
             raise
 
-    def to_schema(self, platform: str) -> Dict[str, Any]:
+    def to_schema(self, platform: str) -> dict[str, Any]:
         """Convert tool to platform-specific schema."""
         if platform == "mcp":
             return self._mcp_schema()
@@ -62,14 +61,14 @@ class Tool(ABC):
         else:
             raise ValueError(f"Unknown platform: {platform}")
     
-    def _mcp_schema(self) -> Dict:
+    def _mcp_schema(self) -> dict:
         return {
             "name": self.name,
             "description": self.description,
             # Subclasses override with inputSchema
         }
     
-    def _groq_schema(self) -> Dict:
+    def _groq_schema(self) -> dict:
         return {
             "type": "function",
             "function": {
@@ -79,7 +78,7 @@ class Tool(ABC):
             }
         }
     
-    def _gemini_schema(self) -> Dict:
+    def _gemini_schema(self) -> dict:
         return {
             "type": "FUNCTION_DECLARATION",
             "name": self.name,

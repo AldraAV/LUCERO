@@ -1,11 +1,13 @@
+import asyncio
 import os
 import re
-import asyncio
-import tempfile
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
+
 import structlog
+
 from ..core.tools import Tool
 
 log = structlog.get_logger()
@@ -17,7 +19,7 @@ class PptMasterTool(Tool):
             description="Genera una presentación nativa de alta calidad (.pptx) usando el orquestador ppt-master con estética del Aldraverse."
         )
     
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         content = params.get("content")
         if not content:
             return {"success": False, "error": "El parámetro 'content' es requerido."}

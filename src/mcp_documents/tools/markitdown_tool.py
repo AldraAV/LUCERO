@@ -1,7 +1,8 @@
-import os
-import structlog
-from typing import Dict, Any
 from pathlib import Path
+from typing import Any
+
+import structlog
+
 from ..core.tools import Tool
 
 log = structlog.get_logger()
@@ -13,7 +14,7 @@ class MarkitdownTool(Tool):
             description="Convierte documentos complejos (PDF, PPTX, XLSX, Word, ZIP, Audio) a Markdown nativo utilizando Microsoft MarkItDown. Extrae texto, tablas y metadata."
         )
 
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         file_path = params.get("file_path")
         
         if not file_path:
@@ -53,4 +54,4 @@ class MarkitdownTool(Tool):
             
         except Exception as e:
             log.error("markitdown_error", error=str(e), file=str(target_file))
-            return {"success": False, "error": f"Error al procesar el archivo: {str(e)}"}
+            return {"success": False, "error": f"Error al procesar el archivo: {e!s}"}

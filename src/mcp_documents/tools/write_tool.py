@@ -1,11 +1,13 @@
-from docx import Document
-from docx.shared import Pt
 from pathlib import Path
-from typing import Dict, Any
-from ..core.tools import Tool
-from ..integrations.encryption import AES256Crypto
+from typing import Any
+
 import aiofiles
 import structlog
+from docx import Document
+from docx.shared import Pt
+
+from ..core.tools import Tool
+from ..integrations.encryption import AES256Crypto
 
 log = structlog.get_logger()
 
@@ -17,7 +19,7 @@ class WriteTool(Tool):
         )
         self.crypto = AES256Crypto()
     
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         file_path = params.get("file_path")
         content = params.get("content")
         format = params.get("format", "docx")

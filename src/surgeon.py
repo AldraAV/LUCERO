@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import copy
 import io
-import shutil
 import zipfile
 from pathlib import Path
 from typing import Any
 
 from lxml import etree
 
-from .utils import NS, JsonDict, get_logger, qn, readable_tag, validate_docx
+from .utils import NS, JsonDict, get_logger, qn, validate_docx
 
 log = get_logger("aldradoc.surgeon")
 
@@ -400,7 +399,7 @@ class DocxSurgeon:
             if rid and rid.startswith("rId"):
                 try:
                     num = int(rid[3:])
-                    if num > max_id: max_id = num
+                    max_id = max(max_id, num)
                 except ValueError: pass
         
         new_rid = f"rId{max_id + 1}"
@@ -511,8 +510,11 @@ class DocxSurgeon:
             elif node.tag == qn("w", "r"):
                 self._apply_rPr(node, properties)
                 modified_count += 1
+            elif node.tag == qn("w", "tbl"):
+                self._apply_tblPr(node, properties)
+                modified_count += 1
             else:
-                log.warning("El nodo objetivo no es w:p ni w:r: %s", node.tag)
+                log.warning("El nodo objetivo no es w:p, w:r ni w:tbl: %s", node.tag)
 
         self._dirty = modified_count > 0
         return {
@@ -521,6 +523,48 @@ class DocxSurgeon:
             "xpath": xpath_expr,
             "dirty": self._dirty
         }
+
+
+    def _apply_tblPr(self, tbl_node: etree._Element, props: dict[str, Any]) -> None:
+        tblPr = tbl_node.find(qn("w", "tblPr"))
+        if tblPr is None:
+            tblPr = etree.Element(qn("w", "tblPr"))
+            tbl_node.insert(0, tblPr)
+            
+        # Support for table cell margins (top, bottom, left, right)
+        margin_props = ["margin_top", "margin_left", "margin_bottom", "margin_right"]
+        if any(p in props for p in margin_props):
+            tblCellMar = tblPr.find(qn("w", "tblCellMar"))
+            if tblCellMar is None:
+                tblCellMar = etree.SubElement(tblPr, qn("w", "tblCellMar"))
+                
+            if "margin_top" in props:
+                top = tblCellMar.find(qn("w", "top"))
+                if top is None:
+                    top = etree.SubElement(tblCellMar, qn("w", "top"))
+                top.set(qn("w", "w"), str(props["margin_top"]))
+                top.set(qn("w", "type"), "dxa")
+                
+            if "margin_bottom" in props:
+                bottom = tblCellMar.find(qn("w", "bottom"))
+                if bottom is None:
+                    bottom = etree.SubElement(tblCellMar, qn("w", "bottom"))
+                bottom.set(qn("w", "w"), str(props["margin_bottom"]))
+                bottom.set(qn("w", "type"), "dxa")
+                
+            if "margin_left" in props:
+                left = tblCellMar.find(qn("w", "left"))
+                if left is None:
+                    left = etree.SubElement(tblCellMar, qn("w", "left"))
+                left.set(qn("w", "w"), str(props["margin_left"]))
+                left.set(qn("w", "type"), "dxa")
+                
+            if "margin_right" in props:
+                right = tblCellMar.find(qn("w", "right"))
+                if right is None:
+                    right = etree.SubElement(tblCellMar, qn("w", "right"))
+                right.set(qn("w", "w"), str(props["margin_right"]))
+                right.set(qn("w", "type"), "dxa")
 
     def _apply_pPr(self, p_node: etree._Element, props: dict[str, Any]) -> None:
         pPr = p_node.find(qn("w", "pPr"))
@@ -678,3 +722,73 @@ class DocxSurgeon:
         self._rels_tree = None
         self._dirty = False
         log.info("Cambios descartados. Árbol recargado.")
+
+    def replace_section_content(self, anchor_heading_text: str, new_xml_elements: list[etree._Element]) -> dict[str, Any]:
+        """
+        Encuentra el encabezado indicado y reemplaza todo su contenido (hasta el siguiente 
+        encabezado del mismo nivel o superior) con los nuevos elementos XML.
+        """
+        body = self.tree.find(qn("w", "body"))
+        if body is None:
+            return {"success": False, "msg": "No se encontro el body."}
+            
+        children = list(body)
+        start_idx = -1
+        heading_level = 0
+        
+        for i, p in enumerate(children):
+            if p.tag != qn("w", "p"): continue
+            texto = "".join(p.itertext()).strip()
+            if anchor_heading_text in texto:
+                start_idx = i
+                pPr = p.find(qn("w", "pPr"))
+                if pPr is not None:
+                    pStyle = pPr.find(qn("w", "pStyle"))
+                    if pStyle is not None:
+                        val = pStyle.get(qn("w", "val"))
+                        if val and val.startswith("Ttulo"):
+                            try:
+                                heading_level = int(val.replace("Ttulo", ""))
+                            except:
+                                pass
+                break
+                
+        if start_idx == -1:
+            return {"success": False, "msg": f"Heading no encontrado: {anchor_heading_text}"}
+            
+        end_idx = len(children)
+        if heading_level > 0:
+            for i in range(start_idx + 1, len(children)):
+                p = children[i]
+                if p.tag != qn("w", "p"): continue
+                pPr = p.find(qn("w", "pPr"))
+                if pPr is not None:
+                    pStyle = pPr.find(qn("w", "pStyle"))
+                    if pStyle is not None:
+                        val = pStyle.get(qn("w", "val"))
+                        if val and val.startswith("Ttulo"):
+                            try:
+                                lvl = int(val.replace("Ttulo", ""))
+                                if lvl <= heading_level:
+                                    end_idx = i
+                                    break
+                            except:
+                                pass
+                                
+        # Remover parrafos viejos
+        removed = 0
+        for i in range(start_idx + 1, end_idx):
+            body.remove(children[i])
+            removed += 1
+            
+        # Inyectar nuevos despues del start_idx
+        current_idx = start_idx
+        for el in new_xml_elements:
+            children[current_idx].addnext(el)
+            # update list of children conceptually by moving current_idx down, but lxml takes care of sibling insertion
+            # wait, addnext on children[current_idx] will reverse order if we loop, because they all add next to start_idx.
+            # We must use the element we just added as the new anchor.
+            children[start_idx] = el  # update pointer so next one adds after this one! (safe trick)
+            
+        self._dirty = True
+        return {"success": True, "removed": removed, "injected": len(new_xml_elements)}

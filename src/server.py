@@ -9,6 +9,7 @@ from __future__ import annotations
 # El protocolo MCP usa stdout para JSON-RPC. Cualquier texto no-JSON en stdout
 # rompe clientes como Opencode con "Unexpected non-whitespace character after JSON".
 import sys
+
 import structlog
 
 structlog.configure(
@@ -18,11 +19,11 @@ structlog.configure(
 
 import json
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import Context, FastMCP
 
-from .apa_templates import (
+from src.apa_templates import (
     TEMPLATE_CATALOG,
     apa_body_paragraph,
     apa_figure_label,
@@ -30,13 +31,21 @@ from .apa_templates import (
     apa_heading1,
     apa_heading2,
     apa_heading3,
-    apa_in_text_citation,
     apa_reference_entry,
 )
-from .surgeon import DocxSurgeon
-from .utils import JsonDict, get_logger
+from src.surgeon import DocxSurgeon
+from src.utils import get_logger, qn
 
 log = get_logger("lucero.server")
+
+from src.utils import export_toon
+
+
+def _custom_dumps(obj, *args, **kwargs):
+    return export_toon(obj)
+
+json.dumps = _custom_dumps
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INSTANCIA MCP
@@ -512,8 +521,9 @@ def inject_toc(
     log.info("[TOOL] inject_toc: anchor=%r, range=%s, position=%s",
              anchor_text, heading_range, position)
     try:
-        from lxml import etree as _etree
         from copy import deepcopy
+
+        from lxml import etree as _etree
 
         surgeon = DocxSurgeon(docx_path)
         body = surgeon.tree.find(qn("w", "body"))
@@ -631,8 +641,9 @@ def inject_toc(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-from .mcp_documents.core.executor import ToolExecutor
 import json
+
+from src.mcp_documents.core.executor import ToolExecutor
 
 lucero_executor = ToolExecutor()
 
@@ -702,7 +713,7 @@ async def compare_documents(
     Compara de forma inteligente múltiples documentos de gestión pública para identificar
     puntos en común, contradicciones explícitas y vacíos de información (gaps).
     """
-    from .herramientas_elite import comparar_documentos_impl
+    from src.herramientas_elite import comparar_documentos_impl
     log.info("[TOOL] compare_documents: %d archivos", len(document_paths))
     try:
         res = await comparar_documentos_impl(document_paths, ctx=ctx)
@@ -722,7 +733,7 @@ async def extract_selective(
     Extrae selectivamente del documento la información solicitada sin devolver todo el texto completo.
     Especialmente útil para aislar fechas, tablas o nombres de personas/organizaciones de forma limpia.
     """
-    from .herramientas_elite import extraer_selectivo_impl
+    from src.herramientas_elite import extraer_selectivo_impl
     log.info("[TOOL] extract_selective: %s (%s)", document_path, extract_type)
     try:
         res = await extraer_selectivo_impl(document_path, extract_type, ctx=ctx)
@@ -741,7 +752,7 @@ async def detect_conflicts(
     Detecta discrepancias, inconsistencias conceptuales o discrepancias de datos (ej. montos discrepantes o
     fechas contradictorias para un mismo suceso) entre múltiples documentos.
     """
-    from .herramientas_elite import detectar_conflictos_impl
+    from src.herramientas_elite import detectar_conflictos_impl
     log.info("[TOOL] detect_conflicts: %d archivos", len(document_paths))
     try:
         res = await detectar_conflictos_impl(document_paths, ctx=ctx)
@@ -760,7 +771,7 @@ async def generate_summary(
     """
     Genera un resumen inteligente y adaptado al tipo solicitado en español para un documento largo.
     """
-    from .herramientas_elite import generar_resumen_impl
+    from src.herramientas_elite import generar_resumen_impl
     log.info("[TOOL] generate_summary: %s (%s)", document_path, summary_type)
     try:
         res = await generar_resumen_impl(document_path, summary_type, ctx=ctx)
@@ -779,7 +790,7 @@ async def create_checklist(
     Analiza un documento de directrices, requerimientos o contrato y genera una lista de verificación (checklist)
     de tareas e hitos estructurada en JSON.
     """
-    from .herramientas_elite import crear_checklist_impl
+    from src.herramientas_elite import crear_checklist_impl
     log.info("[TOOL] create_checklist: %s", document_path)
     try:
         res = await crear_checklist_impl(document_path, ctx=ctx)
@@ -797,7 +808,7 @@ async def extract_timeline(
     """
     Extrae todos los eventos con fecha de un documento de forma estructurada y los ordena cronológicamente.
     """
-    from .herramientas_elite import extraer_cronograma_impl
+    from src.herramientas_elite import extraer_cronograma_impl
     log.info("[TOOL] extract_timeline: %s", document_path)
     try:
         res = await extraer_cronograma_impl(document_path, ctx=ctx)
@@ -816,7 +827,7 @@ async def generate_rubric(
     Crea una tabla estructurada de rúbrica de evaluación con criterios, niveles de desempeño
     y ponderaciones basados en el texto provisto.
     """
-    from .herramientas_elite import generar_rubrica_impl
+    from src.herramientas_elite import generar_rubrica_impl
     log.info("[TOOL] generate_rubric: %s", document_path)
     try:
         res = await generar_rubrica_impl(document_path, ctx=ctx)
@@ -835,7 +846,7 @@ async def smart_merge(
     Fusiona el contenido e información clave de múltiples documentos relacionados eliminando duplicidades
     y redactando un texto maestro consolidado en formato Markdown.
     """
-    from .herramientas_elite import fusion_inteligente_impl
+    from src.herramientas_elite import fusion_inteligente_impl
     log.info("[TOOL] smart_merge: %d archivos", len(document_paths))
     try:
         res = await fusion_inteligente_impl(document_paths, ctx=ctx)
@@ -854,7 +865,7 @@ async def validate_structure(
     Valida la estructura formal del documento, reportando errores estructurales graves,
     advertencias menores y otorgando una calificación general del diseño del contenido de 0 a 100.
     """
-    from .herramientas_elite import validar_estructura_impl
+    from src.herramientas_elite import validar_estructura_impl
     log.info("[TOOL] validate_structure: %s", document_path)
     try:
         res = await validar_estructura_impl(document_path, ctx=ctx)
@@ -873,7 +884,7 @@ async def ocr_quality_score(
     Evalúa la calidad del texto extraído en busca de artefactos de OCR corruptos,
     caracteres extraños o errores tipográficos sistemáticos del escaneo.
     """
-    from .herramientas_elite import calidad_ocr_impl
+    from src.herramientas_elite import calidad_ocr_impl
     log.info("[TOOL] ocr_quality_score: %s", document_path)
     try:
         res = await calidad_ocr_impl(document_path, ctx=ctx)
@@ -892,7 +903,7 @@ async def cross_reference(
     Mapea referencias y relaciones implícitas o explícitas entre un conjunto de documentos.
     Identifica de qué forma se mencionan, citan o contradicen.
     """
-    from .herramientas_elite import mapa_referencias_impl
+    from src.herramientas_elite import mapa_referencias_impl
     log.info("[TOOL] cross_reference: %d archivos", len(document_paths))
     try:
         res = await mapa_referencias_impl(document_paths, ctx=ctx)
@@ -912,7 +923,7 @@ async def completeness_check(
     Analiza si el documento contiene un listado específico de secciones requeridas,
     indicando cuáles faltan y cómo completarlas.
     """
-    from .herramientas_elite import verificacion_completitud_impl
+    from src.herramientas_elite import verificacion_completitud_impl
     log.info("[TOOL] completeness_check: %s", document_path)
     try:
         res = await verificacion_completitud_impl(document_path, expected_sections, ctx=ctx)
@@ -933,7 +944,7 @@ async def batch_process(
     Procesa por lotes todos los documentos de una carpeta aplicando una acción específica
     y devolviendo un reporte consolidado.
     """
-    from .herramientas_elite import procesar_lote_impl
+    from src.herramientas_elite import procesar_lote_impl
     log.info("[TOOL] batch_process: %s (%s)", folder_path, action)
     try:
         res = await procesar_lote_impl(folder_path, action, extension_filter, ctx=ctx)
@@ -953,7 +964,7 @@ async def version_tracking(
     Identifica de forma conceptual los cambios, adiciones, eliminaciones o reformulaciones
     entre dos versiones del mismo archivo.
     """
-    from .herramientas_elite import seguimiento_versiones_impl
+    from src.herramientas_elite import seguimiento_versiones_impl
     log.info("[TOOL] version_tracking: %s vs %s", document_path_1, document_path_2)
     try:
         res = await seguimiento_versiones_impl(document_path_1, document_path_2, ctx=ctx)
@@ -971,7 +982,7 @@ async def create_index(
     """
     Genera un índice temático y conceptual estructurado de temas clave discutidos en el documento.
     """
-    from .herramientas_elite import crear_indice_impl
+    from src.herramientas_elite import crear_indice_impl
     log.info("[TOOL] create_index: %s", document_path)
     try:
         res = await crear_indice_impl(document_path, ctx=ctx)
@@ -990,7 +1001,7 @@ async def extract_relationships(
     Extrae un grafo relacional de personas, organizaciones, fechas, leyes y conceptos clave
     entrelazados en la documentación.
     """
-    from .herramientas_elite import extraer_relaciones_impl
+    from src.herramientas_elite import extraer_relaciones_impl
     log.info("[TOOL] extract_relationships: %d archivos", len(document_paths))
     try:
         res = await extraer_relaciones_impl(document_paths, ctx=ctx)
@@ -1009,7 +1020,7 @@ async def generate_qa_pairs(
     Genera de forma automática pares estructurados de Preguntas y Respuestas esperadas sobre el
     contenido del documento para facilitar entrenamiento o autoevaluación.
     """
-    from .herramientas_elite import generar_preguntas_respuestas_impl
+    from src.herramientas_elite import generar_preguntas_respuestas_impl
     log.info("[TOOL] generate_qa_pairs: %s", document_path)
     try:
         res = await generar_preguntas_respuestas_impl(document_path, ctx=ctx)
@@ -1028,7 +1039,7 @@ async def create_executive_brief(
     Consolida un informe ejecutivo analítico ultra-condensado de 1 página a partir de múltiples
     documentos o carpetas complejas.
     """
-    from .herramientas_elite import briefing_ejecutivo_impl
+    from src.herramientas_elite import briefing_ejecutivo_impl
     log.info("[TOOL] create_executive_brief: %d archivos", len(document_paths))
     try:
         res = await briefing_ejecutivo_impl(document_paths, ctx=ctx)
@@ -1046,10 +1057,10 @@ async def generate_action_items(
     """
     Extrae tareas accionables detalladas del documento con responsables implícitos y plazos inferidos.
     """
-    from .herramientas_elite import generar_items_accion_impl
+    from src.herramientas_elite import generar_items_accion_impl
     log.info("[TOOL] generate_action_items: %s", document_path)
     try:
-        res = await generar_items_accion_impl(document_path, ctx=ctx)
+        res = await generar_items_accion_impl(document_path)
         return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] generate_action_items: %s", exc, exc_info=True)

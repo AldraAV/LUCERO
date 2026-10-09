@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Dict, Any, Literal
 from enum import Enum
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
 
 class DocumentFormat(str, Enum):
     DOCX = "docx"
@@ -18,7 +20,7 @@ class ExtractType(str, Enum):
 
 class ReadDocumentRequest(BaseModel):
     file_path: str = Field(..., description="Path to document file")
-    format: Optional[DocumentFormat] = Field(None, description="Auto-detect if None")
+    format: DocumentFormat | None = Field(None, description="Auto-detect if None")
     extract_type: ExtractType = Field(ExtractType.FULL_TEXT)
     include_metadata: bool = True
     
@@ -36,14 +38,14 @@ class WriteDocumentRequest(BaseModel):
     format: DocumentFormat
     append: bool = False
     encrypt: bool = False
-    style_template: Optional[str] = None  # Name of predefined style
+    style_template: str | None = None  # Name of predefined style
 
 class TransformDocumentRequest(BaseModel):
     source_path: str
     target_format: DocumentFormat
     encrypt: bool = False
     compress: bool = False
-    options: Dict[str, Any] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
 
 class ProcessForAgentRequest(BaseModel):
     file_path: str
@@ -54,11 +56,11 @@ class ProcessForAgentRequest(BaseModel):
 
 class ToolResponse(BaseModel):
     success: bool
-    data: Dict[str, Any] = Field(default_factory=dict)
-    error: Optional[str] = None
+    data: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
     elapsed_ms: float = 0.0
     
 class SchemaResponse(BaseModel):
     platform: str
-    tools: List[Dict[str, Any]]
+    tools: list[dict[str, Any]]
     version: str = "1.0.0"
