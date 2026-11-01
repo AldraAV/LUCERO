@@ -25,6 +25,8 @@ NS: dict[str, str] = {
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
     "v":   "urn:schemas-microsoft-com:vml",
     "wp":  "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    "s":   "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "x14": "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main",
 }
 
 # Prefijo inverso: URI → prefijo para debugging
@@ -90,6 +92,14 @@ def validate_docx(path: Path) -> None:
         raise ValueError(f"Archivo no encontrado: {path}")
     if path.suffix.lower() != ".docx":
         raise ValueError(f"No es un archivo .docx: {path}")
+
+
+def validate_xlsx(path: Path) -> None:
+    """Lanza ValueError si el archivo no existe o no es un Excel valido (.xlsx/.xlsm)."""
+    if not path.exists():
+        raise ValueError(f"Archivo no encontrado: {path}")
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        raise ValueError(f"No es un archivo Excel valido (.xlsx/.xlsm): {path}")
 import yaml
 
 

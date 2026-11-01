@@ -53,7 +53,7 @@ json.dumps = _custom_dumps
 mcp = FastMCP(
     name="LUCERO",
     instructions=(
-        "Servidor MCP de manipulación quirúrgica de documentos .docx.\n"
+        "Servidor MCP de manipulacion quirurgica de documentos (DOCX, PPTX y XLSX).\n"
         "Opera directamente sobre el XML interno (ECMA-376) usando XPath\n"
         "para garantizar precision de nodo y zero format loss.\n\n"
         "Flujo recomendado:\n"
@@ -1070,6 +1070,166 @@ async def generate_action_items(
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRYPOINT
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TIER 1/2 EXCEL: CIRUGIA Y MANIPULACION QUIRURGICA DE HOJAS DE CALCULO
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def inspect_excel_sheets(
+    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel (.xlsx / .xlsm) a inspeccionar"],
+) -> str:
+    """
+    Inspecciona la totalidad de hojas de un libro Excel:
+    nombre, visibilidad, dimensiones (ej. 'A1:F40'), total de filas y columnas con datos,
+    tablas estructuradas y rangos de celdas combinadas.
+    """
+    log.info("[TOOL] inspect_excel_sheets: %s", excel_path)
+    try:
+        from src.xlsx_surgeon import XlsxSurgeon
+        cirujano = XlsxSurgeon(excel_path, solo_lectura=False)
+        hojas = cirujano.inspeccionar_hojas()
+        return json.dumps({
+            "archivo": Path(excel_path).name,
+            "total_hojas": len(hojas),
+            "hojas": hojas,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        log.error("[TOOL ERROR] inspect_excel_sheets: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def inspect_excel_cells(
+    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel (.xlsx / .xlsm)"],
+    sheet_name: Annotated[str | None, "Nombre de la hoja a inspeccionar. Si es None, usa la hoja activa"] = None,
+    cell_range: Annotated[str | None, "Rango de celdas especifico (ej. 'A1:D20' o 'B5'). Si es None, analiza las filas activas"] = None,
+    max_rows: Annotated[int, "Limite maximo de filas a inspeccionar (default 100)"] = 100,
+) -> str:
+    """
+    Inspecciona en profundidad un rango de celdas o filas de una hoja de calculo:
+    extrae valores, formulas, tipos de datos (texto, numero, fecha, etc.) y metadatos
+    de estilo (fuente, negrita, tamano, color, alineacion, relleno y formato numerico).
+    """
+    log.info("[TOOL] inspect_excel_cells: %s (hoja: %s, rango: %s, max_filas: %d)",
+             excel_path, sheet_name, cell_range, max_rows)
+    try:
+        from src.xlsx_surgeon import XlsxSurgeon
+        cirujano = XlsxSurgeon(excel_path, solo_lectura=False)
+        resultado = cirujano.inspeccionar_celdas(
+            nombre_hoja=sheet_name,
+            rango_celdas=cell_range,
+            max_filas=max_rows,
+        )
+        return json.dumps(resultado, ensure_ascii=False)
+    except Exception as exc:
+        log.error("[TOOL ERROR] inspect_excel_cells: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def surgical_replace_excel_cell(
+    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel"],
+    coordinate: Annotated[str, "Coordenada de la celda a modificar (ej. 'B4' o 'F12')"],
+    new_value: Annotated[str, "Nuevo valor a inyectar (texto, numero o formula que inicie con '=')"],
+    sheet_name: Annotated[str | None, "Nombre de la hoja. Si es None, utiliza la hoja activa"] = None,
+    is_formula: Annotated[bool, "Indica explicitamente si el valor debe tratarse como formula"] = False,
+    output_path: Annotated[str | None, "Ruta de salida. Si es None, sobreescribe el archivo original"] = None,
+) -> str:
+    """
+    Modifica atomicamente una celda en una hoja de Excel garantizando el principio
+    de ZERO FORMAT LOSS: preserva intactas la fuente, bordes, rellenos, alineacion
+    y formato numerico original de la celda.
+    """
+    log.info("[TOOL] surgical_replace_excel_cell: %s [%s!%s] -> '%s'",
+             excel_path, sheet_name or "activa", coordinate, new_value)
+    try:
+        from src.xlsx_surgeon import XlsxSurgeon
+        cirujano = XlsxSurgeon(excel_path)
+        hoja_real = sheet_name or cirujano.libro.active.title
+        informe = cirujano.reemplazar_celda_quirurgica(
+            nombre_hoja=hoja_real,
+            coordenada=coordinate,
+            nuevo_valor=new_value,
+            es_formula=is_formula,
+        )
+        ruta_salida = cirujano.guardar(output_path)
+        informe["archivo_guardado"] = str(ruta_salida)
+        return json.dumps(informe, ensure_ascii=False)
+    except Exception as exc:
+        log.error("[TOOL ERROR] surgical_replace_excel_cell: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def surgical_inject_excel_table(
+    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel"],
+    start_cell: Annotated[str, "Celda inicial superior izquierda donde comenzara la tabla (ej. 'A1' o 'C5')"],
+    headers: Annotated[list[str], "Lista de nombres de encabezados de columna"],
+    rows: Annotated[list[list[Any]], "Matriz de datos con las filas a inyectar"],
+    sheet_name: Annotated[str | None, "Nombre de la hoja. Si es None, utiliza la hoja activa"] = None,
+    table_name: Annotated[str | None, "Nombre formal de la tabla estructurada Excel (opcional)"] = None,
+    apply_aurora_style: Annotated[bool, "Si True, aplica tipografia Space Grotesk/Inter y diseno sobrio"] = False,
+    output_path: Annotated[str | None, "Ruta de salida. Si es None, sobreescribe el archivo original"] = None,
+) -> str:
+    """
+    Inyecta una tabla o conjunto de datos estructurados en una hoja de calculo,
+    con autoajuste inteligente de anchos de columna y opcion de aplicar el sistema
+    de estilo sobrio del Aldraverso.
+    """
+    log.info("[TOOL] surgical_inject_excel_table: %s [%s!%s] (%d cols, %d filas)",
+             excel_path, sheet_name or "activa", start_cell, len(headers), len(rows))
+    try:
+        from src.xlsx_surgeon import XlsxSurgeon
+        cirujano = XlsxSurgeon(excel_path)
+        hoja_real = sheet_name or cirujano.libro.active.title
+        informe = cirujano.inyectar_tabla_quirurgica(
+            nombre_hoja=hoja_real,
+            celda_inicio=start_cell,
+            encabezados=headers,
+            filas=rows,
+            nombre_tabla=table_name,
+            aplicar_estilo_aurora=apply_aurora_style,
+        )
+        ruta_salida = cirujano.guardar(output_path)
+        informe["archivo_guardado"] = str(ruta_salida)
+        return json.dumps(informe, ensure_ascii=False)
+    except Exception as exc:
+        log.error("[TOOL ERROR] surgical_inject_excel_table: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def surgical_search_replace_excel(
+    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel"],
+    search_text: Annotated[str, "Texto que se desea buscar en las celdas"],
+    replace_text: Annotated[str, "Texto por el cual se reemplazara"],
+    sheet_name: Annotated[str | None, "Nombre de hoja especifica o None para buscar en todo el libro"] = None,
+    exact_match: Annotated[bool, "Si True, solo sustituye si la celda coincide exactamente con el texto"] = False,
+    output_path: Annotated[str | None, "Ruta de salida. Si es None, sobreescribe el archivo original"] = None,
+) -> str:
+    """
+    Busca y reemplaza cadenas de texto en las celdas de una o todas las hojas del libro,
+    conservando intactas las formulas, fuentes, colores, bordes y formatos numericos.
+    """
+    log.info("[TOOL] surgical_search_replace_excel: %s buscando '%s' -> '%s'",
+             excel_path, search_text, replace_text)
+    try:
+        from src.xlsx_surgeon import XlsxSurgeon
+        cirujano = XlsxSurgeon(excel_path)
+        informe = cirujano.buscar_y_reemplazar(
+            texto_buscar=search_text,
+            texto_reemplazo=replace_text,
+            nombre_hoja=sheet_name,
+            coincidencia_exacta=exact_match,
+        )
+        ruta_salida = cirujano.guardar(output_path)
+        informe["archivo_guardado"] = str(ruta_salida)
+        return json.dumps(informe, ensure_ascii=False)
+    except Exception as exc:
+        log.error("[TOOL ERROR] surgical_search_replace_excel: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
 
 def run() -> None:
     log.info("Iniciando LUCERO (Décimo Hermano) MCP Server...")
