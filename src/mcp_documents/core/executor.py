@@ -34,15 +34,30 @@ class ToolExecutor:
         self._tools[tool.name] = tool
         log.info("tool_registered", tool_name=tool.name)
 
-    async def execute(self, platform: str, tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
-        if tool_name not in self._tools:
+    async def execute(
+        self,
+        platform_or_tool: str,
+        tool_name: str | None = None,
+        params: dict[str, Any] | None = None,
+        **kwargs: Any
+    ) -> dict[str, Any]:
+        if tool_name is None:
+            # Invocación directa: execute(tool_name, params)
+            target_tool = platform_or_tool
+            target_params = params or kwargs or {}
+        else:
+            # Invocación con plataforma: execute(platform, tool_name, params)
+            target_tool = tool_name
+            target_params = params or kwargs or {}
+
+        if target_tool not in self._tools:
             return {
                 "success": False,
-                "error": f"Tool '{tool_name}' not found."
+                "error": f"Tool '{target_tool}' not found."
             }
-        
-        tool = self._tools[tool_name]
-        return await tool.execute_with_timing(params)
+
+        tool = self._tools[target_tool]
+        return await tool.execute_with_timing(target_params)
 
     def get_schemas(self, platform: str) -> list[dict[str, Any]]:
         return [tool.to_schema(platform) for tool in self._tools.values()]

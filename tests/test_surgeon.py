@@ -18,10 +18,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.apa_templates import (
     apa_body_paragraph,
+    apa_centered_text,
     apa_figure_label,
     apa_figure_note,
+    apa_header_page_number,
     apa_heading1,
+    apa_heading2,
+    apa_heading3,
+    apa_heading4,
+    apa_heading5,
     apa_in_text_citation,
+    apa_page_break,
     apa_reference_entry,
 )
 from src.surgeon import DocxSurgeon
@@ -470,4 +477,68 @@ class TestMotorDesplazamientosYClonado:
         contenido = salida_md.read_text(encoding="utf-8")
         assert len(contenido) > 0
         assert surgeon.path.exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TESTS: Jerarquía APA 7, encabezados y regresión (M8, M9, M10, M11)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestApaJerarquiaYRegresion:
+    def test_heading4_nivel_apa7(self):
+        el = apa_heading4("Metodología")
+        ppr = el.find(qn("w", "pPr"))
+        assert ppr is not None
+        ind = ppr.find(qn("w", "ind"))
+        assert ind is not None and ind.get(qn("w", "firstLine")) == "720"
+        texto = "".join((t.text or "") for t in el.iter(qn("w", "t")))
+        assert texto.endswith(".")
+
+    def test_heading5_nivel_apa7(self):
+        el = apa_heading5("Participantes")
+        ppr = el.find(qn("w", "pPr"))
+        assert ppr is not None
+        ind = ppr.find(qn("w", "ind"))
+        assert ind is not None and ind.get(qn("w", "firstLine")) == "720"
+        runs = el.findall(qn("w", "r"))
+        assert any(
+            r.find(qn("w", "rPr")) is not None
+            and r.find(qn("w", "rPr")).find(qn("w", "b")) is not None
+            and r.find(qn("w", "rPr")).find(qn("w", "i")) is not None
+            for r in runs
+        )
+
+    def test_centered_text_portada(self):
+        el = apa_centered_text("Título de Portada", bold=True)
+        ppr = el.find(qn("w", "pPr"))
+        assert ppr is not None
+        jc = ppr.find(qn("w", "jc"))
+        assert jc is not None and jc.get(qn("w", "val")) == "center"
+
+    def test_salto_de_pagina(self):
+        el = apa_page_break()
+        br = el.find(f".//{qn('w', 'br')}")
+        assert br is not None
+        assert br.get(qn("w", "type")) == "page"
+
+    def test_referencia_cursiva_parcial(self):
+        texto = "García, J. (2022). Título del libro. Editorial."
+        el = apa_reference_entry(texto, cursiva="Título del libro")
+        runs = el.findall(qn("w", "r"))
+        run_cursiva = None
+        for r in runs:
+            rpr = r.find(qn("w", "rPr"))
+            if rpr is not None and rpr.find(qn("w", "i")) is not None:
+                t = r.find(qn("w", "t"))
+                if t is not None and t.text == "Título del libro":
+                    run_cursiva = r
+                    break
+        assert run_cursiva is not None
+
+    def test_header_page_number(self):
+        hdr = apa_header_page_number()
+        jc = hdr.find(f".//{qn('w', 'jc')}")
+        assert jc is not None and jc.get(qn("w", "val")) == "right"
+        fld = hdr.find(f".//{qn('w', 'fldSimple')}")
+        assert fld is not None and fld.get(qn("w", "instr")) == "PAGE"
+
 

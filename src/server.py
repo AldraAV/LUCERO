@@ -19,18 +19,22 @@ structlog.configure(
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
 from src.apa_templates import (
     TEMPLATE_CATALOG,
     apa_body_paragraph,
+    apa_centered_text,
     apa_figure_label,
     apa_figure_note,
     apa_heading1,
     apa_heading2,
     apa_heading3,
+    apa_heading4,
+    apa_heading5,
+    apa_page_break,
     apa_reference_entry,
 )
 from src.surgeon import DocxSurgeon
@@ -203,6 +207,10 @@ def inject_apa_structure(
                 nodes = [apa_heading2(content)]
             case "heading3":
                 nodes = [apa_heading3(content)]
+            case "heading4":
+                nodes = [apa_heading4(content)]
+            case "heading5":
+                nodes = [apa_heading5(content)]
             case "body_paragraph":
                 nodes = [apa_body_paragraph(content)]
             case "figure_label":
@@ -213,6 +221,10 @@ def inject_apa_structure(
                 nodes = [apa_figure_note(note)]
             case "reference":
                 nodes = [apa_reference_entry(content)]
+            case "centered_text":
+                nodes = [apa_centered_text(content)]
+            case "page_break":
+                nodes = [apa_page_break()]
             case _:
                 available = list(TEMPLATE_CATALOG.keys())
                 return json.dumps({

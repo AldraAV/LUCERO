@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import io
+import shutil
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -106,14 +107,27 @@ class DocxSurgeon:
             runs_data: list[JsonDict] = []
             for r_idx, run in enumerate(para.findall(qn("w", "r"))):
                 rpr = run.find(qn("w", "rPr"))
-                fmt: dict[str, bool] = {}
                 if rpr is not None:
-                    fmt = {
-                        "bold":      rpr.find(qn("w", "b"))    is not None,
-                        "italic":    rpr.find(qn("w", "i"))    is not None,
-                        "underline": rpr.find(qn("w", "u"))    is not None,
-                        "strike":    rpr.find(qn("w", "strike")) is not None,
-                    }
+                    b_el = rpr.find(qn("w", "b"))
+                    bold_val = (b_el is not None and b_el.get(qn("w", "val"), "true").lower() not in ("0", "false"))
+                    i_el = rpr.find(qn("w", "i"))
+                    italic_val = (i_el is not None and i_el.get(qn("w", "val"), "true").lower() not in ("0", "false"))
+                    u_el = rpr.find(qn("w", "u"))
+                    underline_val = (u_el is not None and u_el.get(qn("w", "val"), "none").lower() not in ("0", "none", "false"))
+                    strike_el = rpr.find(qn("w", "strike"))
+                    strike_val = (strike_el is not None and strike_el.get(qn("w", "val"), "true").lower() not in ("0", "false"))
+                else:
+                    bold_val = False
+                    italic_val = False
+                    underline_val = False
+                    strike_val = False
+
+                fmt: dict[str, bool] = {
+                    "bold":      bold_val,
+                    "italic":    italic_val,
+                    "underline": underline_val,
+                    "strike":    strike_val,
+                }
                 t_el = run.find(qn("w", "t"))
                 text = (t_el.text or "") if t_el is not None else ""
                 runs_data.append({
@@ -166,6 +180,10 @@ class DocxSurgeon:
         log.info("Imágenes encontradas: %s", unique_results)
         return unique_results
 
+    def texto_parrafo(self, p_node: etree._Element) -> str:
+        """Devuelve el texto completo concatenado de todos los runs de un párrafo."""
+        return "".join((t.text or "") for t in p_node.iter(qn("w", "t")))
+
     # ── Reemplazo quirúrgico de texto ─────────────────────────────────────────
 
     def surgical_replace(
@@ -181,7 +199,7 @@ class DocxSurgeon:
         Maneja runs simples Y runs fragmentados (texto dividido entre
         varios <w:r> consecutivos por autocorrección de Word).
 
-        occurrence: qué aparición reemplazar (1 = primera, -1 = todas).
+        occurrence: qué aparición reemplazar (1 = primera, 2 = segunda, -1 = todas).
         """
         log.info("surgical_replace: %r → %r (occurrence=%d)",
                  target_text, replacement_text, occurrence)
@@ -190,16 +208,14 @@ class DocxSurgeon:
         if body is None:
             raise RuntimeError("No se encontró <w:body>")
 
-        count_replaced = 0
-        count_found = 0
+        # 1. Encontrar todas las apariciones a lo largo del documento
+        coincidencias: list[dict[str, Any]] = []
 
-        for para in body.iter(qn("w", "p")):
-            # Recolectar todos los runs del párrafo con su texto
+        for p_idx, para in enumerate(body.iter(qn("w", "p"))):
             runs = para.findall(f".//{qn('w', 'r')}")
             if not runs:
                 continue
 
-            # Construir texto concatenado del párrafo
             para_text = "".join(
                 (r.find(qn("w", "t")).text or "")
                 for r in runs
@@ -209,43 +225,82 @@ class DocxSurgeon:
             if target_text not in para_text:
                 continue
 
-            count_found += 1
-
-            # ─ Estrategia: encontrar el run que contiene el inicio del target ─
-            # Intento 1: target en un solo run
-            replaced = False
+            # Mapear rangos de caracteres de cada run
+            mapa_runs: list[tuple[etree._Element, etree._Element, str, int, int]] = []
+            cursor = 0
             for run in runs:
                 t_el = run.find(qn("w", "t"))
-                if t_el is None:
-                    continue
-                run_text = t_el.text or ""
-                if target_text in run_text:
-                    old = run_text
-                    t_el.text = run_text.replace(target_text, replacement_text, 1)
-                    # Preservar xml:space si el texto tiene espacios al borde
-                    if (t_el.text or "").strip() != (t_el.text or ""):
-                        t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-                    log.info("  [SINGLE-RUN] '%s' → '%s' en run", old, t_el.text)
-                    replaced = True
-                    count_replaced += 1
-                    self._dirty = True
+                if t_el is not None:
+                    txt = t_el.text or ""
+                    mapa_runs.append((run, t_el, txt, cursor, cursor + len(txt)))
+                    cursor += len(txt)
+
+            # Buscar todas las posiciones de target_text en el texto del párrafo
+            pos = 0
+            while True:
+                idx_hallado = para_text.find(target_text, pos)
+                if idx_hallado == -1:
                     break
+                idx_fin = idx_hallado + len(target_text)
 
-            # Intento 2: target fragmentado entre runs consecutivos
-            if not replaced:
-                log.debug("  Intentando reemplazo multi-run para %r", target_text)
-                replaced = self._replace_fragmented(runs, target_text, replacement_text)
-                if replaced:
+                # Verificar si cae dentro de un único run
+                en_run_unico = False
+                for r, t_el, txt, r_ini, r_fin in mapa_runs:
+                    if r_ini <= idx_hallado and idx_fin <= r_fin:
+                        coincidencias.append({
+                            "tipo": "single",
+                            "para": para,
+                            "run": r,
+                            "t_el": t_el,
+                            "run_ini": r_ini,
+                            "run_fin": r_fin,
+                            "local_ini": idx_hallado - r_ini,
+                            "local_fin": idx_fin - r_ini,
+                        })
+                        en_run_unico = True
+                        break
+
+                if not en_run_unico:
+                    coincidencias.append({
+                        "tipo": "multi",
+                        "para": para,
+                        "runs": runs,
+                    })
+
+                pos = idx_hallado + len(target_text)
+
+        count_found = len(coincidencias)
+        count_replaced = 0
+
+        # 2. Determinar cuáles coincidencias reemplazar
+        indices_a_reemplazar: list[int] = []
+        if occurrence == -1:
+            indices_a_reemplazar = list(range(count_found))
+        elif 1 <= occurrence <= count_found:
+            indices_a_reemplazar = [occurrence - 1]
+
+        # 3. Aplicar reemplazos de mayor a menor para evitar corrimientos
+        for idx in sorted(indices_a_reemplazar, reverse=True):
+            m = coincidencias[idx]
+            if m["tipo"] == "single":
+                t_el = m["t_el"]
+                txt_actual = t_el.text or ""
+                nuevo_txt = txt_actual[:m["local_ini"]] + replacement_text + txt_actual[m["local_fin"]:]
+                t_el.text = nuevo_txt
+                if nuevo_txt.strip() != nuevo_txt:
+                    t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                count_replaced += 1
+                self._dirty = True
+            elif m["tipo"] == "multi":
+                reemplazado = self._replace_fragmented(m["runs"], target_text, replacement_text)
+                if reemplazado:
                     count_replaced += 1
                     self._dirty = True
-
-            if occurrence != -1 and count_replaced >= occurrence:
-                break
 
         result = {
-            "target":      target_text,
+            "target": target_text,
             "replacement": replacement_text,
-            "occurrences_found":    count_found,
+            "occurrences_found": count_found,
             "occurrences_replaced": count_replaced,
             "dirty": self._dirty,
         }
@@ -290,6 +345,326 @@ class DocxSurgeon:
                      len(t_elements))
             return True
         return False
+
+    # ── Inserción y Clonación Estructural ─────────────────────────────────────
+
+    def insertar_parrafo_clonado(
+        self,
+        texto_ancla: str,
+        segmentos: list[str],
+        posicion: str = "despues",
+    ) -> dict[str, Any]:
+        """
+        Inserta un nuevo párrafo clonando el pPr del párrafo ancla y
+        creando runs que heredan el formato de los runs originales.
+        """
+        body = self.tree.find(qn("w", "body"))
+        if body is None:
+            return {"success": False, "error": "No se encontró <w:body>"}
+
+        anchor_para = None
+        for p in body.findall(f".//{qn('w', 'p')}"):
+            p_text = "".join((t.text or "") for t in p.iter(qn("w", "t")))
+            if texto_ancla in p_text:
+                anchor_para = p
+                break
+
+        if anchor_para is None:
+            return {"success": False, "error": f"Ancla {texto_ancla!r} no encontrada"}
+
+        nuevo_p = etree.Element(qn("w", "p"))
+        anchor_ppr = anchor_para.find(qn("w", "pPr"))
+        if anchor_ppr is not None:
+            nuevo_p.append(copy.deepcopy(anchor_ppr))
+
+        anchor_runs = anchor_para.findall(qn("w", "r"))
+        for idx, seg in enumerate(segmentos):
+            nuevo_r = etree.SubElement(nuevo_p, qn("w", "r"))
+            if idx < len(anchor_runs):
+                orig_rpr = anchor_runs[idx].find(qn("w", "rPr"))
+                if orig_rpr is not None:
+                    nuevo_r.append(copy.deepcopy(orig_rpr))
+            elif anchor_runs:
+                orig_rpr = anchor_runs[-1].find(qn("w", "rPr"))
+                if orig_rpr is not None:
+                    nuevo_r.append(copy.deepcopy(orig_rpr))
+
+            t_el = etree.SubElement(nuevo_r, qn("w", "t"))
+            t_el.text = seg
+            if seg.strip() != seg:
+                t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+
+        if posicion.lower() in ("despues", "después", "after"):
+            anchor_para.addnext(nuevo_p)
+        else:
+            anchor_para.addprevious(nuevo_p)
+
+        self._dirty = True
+        return {"success": True, "paragraph": nuevo_p}
+
+    # ── Lotes Atómicos de Operaciones ─────────────────────────────────────────
+
+    def aplicar_lote(self, operaciones: list[dict[str, Any]]) -> dict[str, Any]:
+        """
+        Aplica un lote de operaciones atómicas sobre el documento.
+        Si alguna operación falla, se revierten todos los cambios en memoria.
+        """
+        arbol_respaldo = copy.deepcopy(self._tree) if self._tree is not None else None
+        rels_respaldo = copy.deepcopy(self._rels_tree) if self._rels_tree is not None else None
+        dirty_respaldo = self._dirty
+        escrituras_respaldo = dict(self.pending_writes)
+
+        for idx, op in enumerate(operaciones):
+            tipo = op.get("tipo")
+            if tipo == "reemplazar":
+                objetivo = op.get("objetivo", "")
+                reemplazo = op.get("reemplazo", "")
+                ocurrencia = op.get("ocurrencia", op.get("occurrence", 1))
+                res = self.surgical_replace(
+                    target_text=objetivo,
+                    replacement_text=reemplazo,
+                    occurrence=ocurrencia,
+                )
+                if res.get("occurrences_replaced", 0) == 0:
+                    self._tree = arbol_respaldo
+                    self._rels_tree = rels_respaldo
+                    self._dirty = dirty_respaldo
+                    self.pending_writes = escrituras_respaldo
+                    return {
+                        "exito": False,
+                        "fallo_en": idx + 1,
+                        "error": f"No se encontró el texto objetivo en la operación {idx + 1}: {objetivo!r}",
+                    }
+            elif tipo == "insertar_parrafo":
+                ancla = op.get("texto_ancla", "")
+                segmentos = op.get("segmentos", [])
+                posicion = op.get("posicion", "despues")
+                res = self.insertar_parrafo_clonado(
+                    texto_ancla=ancla,
+                    segmentos=segmentos,
+                    posicion=posicion,
+                )
+                if not res.get("success"):
+                    self._tree = arbol_respaldo
+                    self._rels_tree = rels_respaldo
+                    self._dirty = dirty_respaldo
+                    self.pending_writes = escrituras_respaldo
+                    return {
+                        "exito": False,
+                        "fallo_en": idx + 1,
+                        "error": res.get("error", "Error al insertar párrafo"),
+                    }
+            else:
+                self._tree = arbol_respaldo
+                self._rels_tree = rels_respaldo
+                self._dirty = dirty_respaldo
+                self.pending_writes = escrituras_respaldo
+                return {
+                    "exito": False,
+                    "fallo_en": idx + 1,
+                    "error": f"Tipo de operación desconocido: {tipo!r}",
+                }
+
+        return {"exito": True, "operaciones_aplicadas": len(operaciones)}
+
+    # ── Ensamblado de Plantilla Maestra ───────────────────────────────────────
+
+    def ensamblar_plantilla_maestra(
+        self,
+        ruta_hoja_presentacion: str | Path | None = None,
+        ruta_contenido_cuerpo: str | Path | None = None,
+        ancla_indice: str = "Índice",
+        ancla_cuerpo_destino: str = "Resumen viejo",
+        ancla_cuerpo_origen: str = "Resumen",
+        identificador_cuerpo_origen: str = "EmpleaTEC",
+    ) -> dict[str, Any]:
+        """
+        Ensambla una plantilla maestra:
+        - Integra hoja de presentación (si se proporciona) antes del índice.
+        - Preserva el índice y la estructura previa.
+        - Inyecta el contenido del cuerpo a partir del ancla destino.
+        """
+        body = self.tree.find(qn("w", "body"))
+        if body is None:
+            return {"success": False, "error": "No se encontró <w:body>"}
+
+        elementos_cuerpo_inyectados = 0
+        elementos_hoja_inyectados = 0
+
+        # 1. Reemplazar o insertar hoja de presentación si se especifica
+        if ruta_hoja_presentacion and Path(ruta_hoja_presentacion).exists():
+            cirujano_hoja = DocxSurgeon(ruta_hoja_presentacion)
+            hoja_body = cirujano_hoja.tree.find(qn("w", "body"))
+            if hoja_body is not None:
+                parrafos_hoja = [
+                    copy.deepcopy(el) for el in hoja_body
+                    if el.tag == qn("w", "p") and el.tag != qn("w", "sectPr")
+                ]
+                # Buscar ancla del índice en la plantilla
+                idx_indice = -1
+                for i, child in enumerate(body):
+                    if child.tag == qn("w", "p"):
+                        txt = "".join((t.text or "") for t in child.iter(qn("w", "t")))
+                        if ancla_indice in txt:
+                            idx_indice = i
+                            break
+                if idx_indice != -1 and parrafos_hoja:
+                    # Remover párrafos antes del índice (portada vieja)
+                    for k in range(idx_indice - 1, -1, -1):
+                        if body[k].tag == qn("w", "p"):
+                            body.remove(body[k])
+                    # Inyectar párrafos de hoja al inicio
+                    for offset, el in enumerate(parrafos_hoja):
+                        body.insert(offset, el)
+                        elementos_hoja_inyectados += 1
+
+        # 2. Inyectar contenido del cuerpo
+        if ruta_contenido_cuerpo and Path(ruta_contenido_cuerpo).exists():
+            cirujano_cuerpo = DocxSurgeon(ruta_contenido_cuerpo)
+            cuerpo_body = cirujano_cuerpo.tree.find(qn("w", "body"))
+            if cuerpo_body is not None:
+                # Extraer elementos a partir de ancla_cuerpo_origen o identificador
+                elementos_origen = []
+                capturando = False
+                for el in cuerpo_body:
+                    if el.tag == qn("w", "sectPr"):
+                        continue
+                    txt = "".join((t.text or "") for t in el.iter(qn("w", "t")))
+                    if not capturando and (ancla_cuerpo_origen in txt or identificador_cuerpo_origen in txt):
+                        capturando = True
+                    if capturando:
+                        elementos_origen.append(copy.deepcopy(el))
+
+                if not elementos_origen:
+                    # Si no hubo coincidencia con ancla, tomar todos los párrafos y tablas
+                    elementos_origen = [
+                        copy.deepcopy(el) for el in cuerpo_body
+                        if el.tag in (qn("w", "p"), qn("w", "tbl"))
+                    ]
+
+                # Localizar ancla destino en plantilla
+                nodo_destino = None
+                for child in body:
+                    if child.tag == qn("w", "p"):
+                        txt = "".join((t.text or "") for t in child.iter(qn("w", "t")))
+                        if ancla_cuerpo_destino in txt:
+                            nodo_destino = child
+                            break
+
+                if nodo_destino is not None:
+                    puntero = nodo_destino
+                    for el in elementos_origen:
+                        puntero.addnext(el)
+                        puntero = el
+                        elementos_cuerpo_inyectados += 1
+                    body.remove(nodo_destino)
+                else:
+                    sect = body.find(qn("w", "sectPr"))
+                    for el in elementos_origen:
+                        if sect is not None:
+                            sect.addprevious(el)
+                        else:
+                            body.append(el)
+                        elementos_cuerpo_inyectados += 1
+
+        self._dirty = True
+        return {
+            "success": True,
+            "cuerpo_elementos": elementos_cuerpo_inyectados,
+            "hoja_elementos": elementos_hoja_inyectados,
+        }
+
+    # ── Exportar a Markdown ───────────────────────────────────────────────────
+
+    def exportar_a_markdown(self, ruta_salida_md: str | Path) -> dict[str, Any]:
+        """
+        Exporta el contenido de document.xml a un archivo Markdown limpio (.md).
+        Preserva encabezados, párrafos y tablas básicas.
+        """
+        body = self.tree.find(qn("w", "body"))
+        if body is None:
+            return {"success": False, "error": "No se encontró <w:body>"}
+
+        lineas_md: list[str] = []
+
+        for elemento in body:
+            if elemento.tag == qn("w", "p"):
+                # Verificar si es encabezado
+                ppr = elemento.find(qn("w", "pPr"))
+                nivel_encabezado = 0
+                if ppr is not None:
+                    pstyle = ppr.find(qn("w", "pStyle"))
+                    if pstyle is not None:
+                        val = pstyle.get(qn("w", "val"), "").lower()
+                        if "heading 1" in val or "título 1" in val or "titulo 1" in val or "heading1" in val:
+                            nivel_encabezado = 1
+                        elif "heading 2" in val or "título 2" in val or "titulo 2" in val or "heading2" in val:
+                            nivel_encabezado = 2
+                        elif "heading 3" in val or "título 3" in val or "titulo 3" in val or "heading3" in val:
+                            nivel_encabezado = 3
+
+                partes_texto: list[str] = []
+                for run in elemento.findall(qn("w", "r")):
+                    rpr = run.find(qn("w", "rPr"))
+                    t_el = run.find(qn("w", "t"))
+                    if t_el is None or not t_el.text:
+                        continue
+                    txt = t_el.text
+                    es_negrita = rpr is not None and rpr.find(qn("w", "b")) is not None
+                    es_cursiva = rpr is not None and rpr.find(qn("w", "i")) is not None
+
+                    if es_negrita and es_cursiva:
+                        partes_texto.append(f"***{txt.strip()}***")
+                    elif es_negrita:
+                        partes_texto.append(f"**{txt.strip()}**")
+                    elif es_cursiva:
+                        partes_texto.append(f"*{txt.strip()}*")
+                    else:
+                        partes_texto.append(txt)
+
+                parrafo_md = "".join(partes_texto).strip()
+                if parrafo_md:
+                    if nivel_encabezado > 0:
+                        prefijo = "#" * nivel_encabezado
+                        lineas_md.append(f"{prefijo} {parrafo_md}\n")
+                    else:
+                        lineas_md.append(f"{parrafo_md}\n")
+
+            elif elemento.tag == qn("w", "tbl"):
+                filas = elemento.findall(qn("w", "tr"))
+                if not filas:
+                    continue
+                matriz_tabla: list[list[str]] = []
+                for fila in filas:
+                    celdas = fila.findall(qn("w", "tc"))
+                    fila_texto = []
+                    for celda in celdas:
+                        textos_celda = [t.text or "" for t in celda.iter(qn("w", "t"))]
+                        fila_texto.append(" ".join(textos_celda).strip())
+                    matriz_tabla.append(fila_texto)
+
+                if matriz_tabla:
+                    num_cols = max(len(f) for f in matriz_tabla)
+                    for f in matriz_tabla:
+                        while len(f) < num_cols:
+                            f.append("")
+                    encabezados = matriz_tabla[0]
+                    lineas_md.append("| " + " | ".join(encabezados) + " |")
+                    lineas_md.append("| " + " | ".join(["---"] * num_cols) + " |")
+                    for fila_datos in matriz_tabla[1:]:
+                        lineas_md.append("| " + " | ".join(fila_datos) + " |")
+                    lineas_md.append("")
+
+        contenido_md = "\n".join(lineas_md)
+        salida = Path(ruta_salida_md)
+        salida.parent.mkdir(parents=True, exist_ok=True)
+        salida.write_text(contenido_md, encoding="utf-8")
+
+        return {
+            "success": True,
+            "output_path": str(salida),
+            "bytes_written": len(contenido_md.encode("utf-8")),
+        }
 
     # ── Inyección de estructura APA ───────────────────────────────────────────
 
@@ -391,7 +766,6 @@ class DocxSurgeon:
 
     def surgical_inject_image(self, xpath_expr: str, new_image_path: str | Path) -> dict[str, Any]:
         """Inyecta un nuevo nodo <w:drawing> y crea sus relaciones en el DOCX."""
-        # Encontrar ID máximo
         rels = self.rels_tree.findall(".//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship")
         max_id = 0
         for rel in rels:
@@ -412,7 +786,6 @@ class DocxSurgeon:
         target_name = f"media/image_injected_{max_id + 1}{ext}"
         zip_target = f"word/{target_name}"
         
-        # Registrar en rels
         new_rel = etree.SubElement(self.rels_tree, "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship")
         new_rel.set("Id", new_rid)
         new_rel.set("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image")
@@ -420,12 +793,11 @@ class DocxSurgeon:
         
         self.pending_writes[zip_target] = img_bytes
         
-        # Inyectar <w:drawing>
         nodes = self.find_by_xpath(xpath_expr)
         if not nodes:
             return {"success": False, "error": f"XPath no encontró ningún nodo: {xpath_expr}"}
             
-        cx = 3 * 914400  # 3 pulgadas aprox
+        cx = 3 * 914400
         cy = 3 * 914400
         
         drawing_xml = f"""
@@ -483,16 +855,6 @@ class DocxSurgeon:
     ) -> dict[str, Any]:
         """
         Inyecta o modifica propiedades OOXML en un nodo específico (w:p o w:r).
-        
-        properties: {
-            "align": "left|center|right|both",
-            "size": int (medios puntos, ej. 24 = 12pt),
-            "font": str (ej. "Arial"),
-            "bold": bool,
-            "italic": bool,
-            "indent_left": int (twips),
-            "indent_hanging": int (twips)
-        }
         """
         log.info("surgical_style_edit en %r con propiedades: %r", xpath_expr, properties)
         nodes = self.find_by_xpath(xpath_expr)
@@ -503,7 +865,6 @@ class DocxSurgeon:
         for node in nodes:
             if node.tag == qn("w", "p"):
                 self._apply_pPr(node, properties)
-                # Aplicar también a todos los runs hijos para que el texto cambie
                 for run in node.findall(f".//{qn('w', 'r')}"):
                     self._apply_rPr(run, properties)
                 modified_count += 1
@@ -524,14 +885,12 @@ class DocxSurgeon:
             "dirty": self._dirty
         }
 
-
     def _apply_tblPr(self, tbl_node: etree._Element, props: dict[str, Any]) -> None:
         tblPr = tbl_node.find(qn("w", "tblPr"))
         if tblPr is None:
             tblPr = etree.Element(qn("w", "tblPr"))
             tbl_node.insert(0, tblPr)
             
-        # Support for table cell margins (top, bottom, left, right)
         margin_props = ["margin_top", "margin_left", "margin_bottom", "margin_right"]
         if any(p in props for p in margin_props):
             tblCellMar = tblPr.find(qn("w", "tblCellMar"))
@@ -587,7 +946,6 @@ class DocxSurgeon:
             if "indent_hanging" in props:
                 ind.set(qn("w", "hanging"), str(props["indent_hanging"]))
 
-        # Apply run properties to the paragraph mark if present
         self._apply_rPr(pPr, props)
 
     def _apply_rPr(self, parent_node: etree._Element, props: dict[str, Any]) -> None:
@@ -635,14 +993,14 @@ class DocxSurgeon:
 
     # ── Commit: reempaquetado seguro del ZIP ──────────────────────────────────
 
-
     def commit_changes(self, output_path: str | Path | None = None) -> dict[str, Any]:
         """
         Reempaqueta el DOCX con el document.xml modificado.
         Preserva: [Content_Types].xml, relaciones, imágenes y todos
         los demás miembros del ZIP sin tocarlos.
 
-        Si output_path es None, sobreescribe el archivo original.
+        Si output_path es None o es igual al archivo original, genera
+        una copia de respaldo (.bak) y sobreescribe el original.
         """
         if not self._dirty:
             log.warning("commit_changes llamado sin cambios pendientes. Abortando.")
@@ -651,13 +1009,17 @@ class DocxSurgeon:
         out = Path(output_path) if output_path else self.path
         log.info("Committing cambios a: %s", out)
 
+        backup_path = None
+        if out.resolve() == self.path.resolve() and self.path.exists():
+            backup_file = self.path.with_suffix(self.path.suffix + ".bak")
+            shutil.copy2(self.path, backup_file)
+            backup_path = str(backup_file)
+
         # Serializar el árbol modificado
         new_doc_xml = self._serialize_xml(self.tree)
         log.debug("document.xml serializado (%d bytes)", len(new_doc_xml))
 
-        # Construir el nuevo ZIP en memoria
         out_buffer = io.BytesIO()
-        
         self.pending_writes[WORD_DOCUMENT] = new_doc_xml
         if self._rels_tree is not None:
             self.pending_writes[WORD_RELS] = self._serialize_xml(self.rels_tree)
@@ -676,12 +1038,10 @@ class DocxSurgeon:
                     else:
                         dst_zip.writestr(item, src_zip.read(item.filename))
                         
-                # Escribir archivos nuevos que no existían en el ZIP
                 for filename, data in self.pending_writes.items():
                     dst_zip.writestr(filename, data)
                     log.debug("  [ADDED] %s", filename)
 
-        # Escribir a disco
         out.write_bytes(out_buffer.getvalue())
         size_kb = out.stat().st_size / 1024
         self._dirty = False
@@ -691,6 +1051,7 @@ class DocxSurgeon:
             "output_path": str(out),
             "size_kb":     round(size_kb, 1),
             "xml_size_bytes": len(new_doc_xml),
+            "backup_path": backup_path,
         }
         log.info("Commit exitoso: %s (%.1f KB)", out.name, size_kb)
         return result
@@ -775,20 +1136,15 @@ class DocxSurgeon:
                             except:
                                 pass
                                 
-        # Remover parrafos viejos
         removed = 0
         for i in range(start_idx + 1, end_idx):
             body.remove(children[i])
             removed += 1
             
-        # Inyectar nuevos despues del start_idx
-        current_idx = start_idx
+        puntero = children[start_idx]
         for el in new_xml_elements:
-            children[current_idx].addnext(el)
-            # update list of children conceptually by moving current_idx down, but lxml takes care of sibling insertion
-            # wait, addnext on children[current_idx] will reverse order if we loop, because they all add next to start_idx.
-            # We must use the element we just added as the new anchor.
-            children[start_idx] = el  # update pointer so next one adds after this one! (safe trick)
+            puntero.addnext(el)
+            puntero = el
             
         self._dirty = True
         return {"success": True, "removed": removed, "injected": len(new_xml_elements)}

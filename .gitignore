@@ -1,18 +1,39 @@
-graphify-out/
-
-*.log
-
-.env
-
+# Caches y bytecode
 __pycache__/
-
-node_modules/
-.venv/
-
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 .pytest_cache/
-*.docx
-.DS_Store
+.mypy_cache/
+.ruff_cache/
+
+# Entornos virtuales
+.venv/
+env/
+venv/
+ENV/
+
+# Secretos y configuracion local
+.env
+.env.*
+!.env.example
+
+# Logs y respaldos
+*.log
+*.bak
+*.docx.bak
+*.xlsx.bak
+tmp/
+temp/
+
+# IDE y sistema operativo
 .vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Salidas y archivos temporales generados
+node_modules/
+graphify-out/
+*.docx
+*.xlsx
 *.xml
