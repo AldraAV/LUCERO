@@ -542,3 +542,97 @@ class TestApaJerarquiaYRegresion:
         assert fld is not None and fld.get(qn("w", "instr")) == "PAGE"
 
 
+class TestSurgicalInjectImageYEsquema:
+    """Pruebas de inyeccion de imagenes, registro de Content-Type y esquema canónico OOXML."""
+
+    def test_inject_image_jpg_content_types_y_aspect_ratio(self, tmp_docx: Path, tmp_path: Path):
+        """Valida que surgical_inject_image registre image/jpeg en [Content_Types].xml y respete aspect ratio."""
+        import zipfile
+        import docx
+        from PIL import Image as PILImage
+
+        # 1. Crear imagen JPG panoramica (600x200, proporcion 3:1)
+        img_path = tmp_path / "captura_panoramica.jpg"
+        img = PILImage.new("RGB", (600, 200), color=(245, 158, 11))
+        img.save(str(img_path), "JPEG")
+
+        surgeon = DocxSurgeon(tmp_docx)
+        resultado = surgeon.surgical_inject_image("//w:body//w:p[1]", img_path)
+        assert resultado["success"] is True
+        assert "injected_rId" in resultado
+
+        salida_docx = tmp_path / "docx_con_imagen.docx"
+        commit_res = surgeon.commit_changes(salida_docx)
+        assert commit_res["committed"] is True
+        assert salida_docx.exists()
+
+        # 2. Verificar que [Content_Types].xml contenga la extension jpg
+        with zipfile.ZipFile(salida_docx, "r") as z:
+            ct_xml = z.read("[Content_Types].xml").decode("utf-8")
+            assert 'Extension="jpg"' in ct_xml
+            assert 'ContentType="image/jpeg"' in ct_xml
+
+        # 3. Verificar que python-docx pueda abrir el documento sin lanzar KeyError por Content-Type
+        doc = docx.Document(str(salida_docx))
+        assert len(doc.paragraphs) >= 1
+
+        # 4. Verificar que la proporcion cx / cy en el XML inyectado respete 3:1
+        surgeon_verif = DocxSurgeon(salida_docx)
+        drawing = surgeon_verif.tree.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing")
+        assert drawing is not None
+        extent = drawing.find(".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}extent")
+        assert extent is not None
+        cx = int(extent.get("cx"))
+        cy = int(extent.get("cy"))
+        ratio = cx / cy
+        assert abs(ratio - 3.0) < 0.05
+
+    def test_inject_image_png_content_types(self, tmp_docx: Path, tmp_path: Path):
+        """Valida que surgical_inject_image registre image/png en [Content_Types].xml."""
+        import zipfile
+        import docx
+        from PIL import Image as PILImage
+
+        img_path = tmp_path / "icono_cuadrado.png"
+        img = PILImage.new("RGBA", (250, 250), color=(16, 185, 129, 255))
+        img.save(str(img_path), "PNG")
+
+        surgeon = DocxSurgeon(tmp_docx)
+        res = surgeon.surgical_inject_image("//w:body//w:p[1]", img_path)
+        assert res["success"] is True
+
+        salida = tmp_path / "docx_png.docx"
+        surgeon.commit_changes(salida)
+
+        with zipfile.ZipFile(salida, "r") as z:
+            ct_xml = z.read("[Content_Types].xml").decode("utf-8")
+            assert 'Extension="png"' in ct_xml
+            assert 'ContentType="image/png"' in ct_xml
+
+        doc = docx.Document(str(salida))
+        assert len(doc.paragraphs) >= 1
+
+    def test_rpr_orden_canonico_ooxml(self):
+        """Valida que _make_run escriba los hijos de rPr en el orden canónico exigido por OOXML (rFonts antes de b/i/sz)."""
+        from src.apa_templates import _make_run
+        run_el = _make_run("Texto formateado", bold=True, italic=True)
+        rpr = run_el.find(qn("w", "rPr"))
+        assert rpr is not None
+
+        tags = [etree.QName(child.tag).localname for child in rpr]
+        assert "rFonts" in tags
+        assert "b" in tags
+        assert "i" in tags
+        assert "sz" in tags
+
+        idx_fonts = tags.index("rFonts")
+        idx_b = tags.index("b")
+        idx_i = tags.index("i")
+        idx_sz = tags.index("sz")
+
+        # rFonts DEBE ir antes de b, i y sz
+        assert idx_fonts < idx_b
+        assert idx_b < idx_i
+        assert idx_i < idx_sz
+
+

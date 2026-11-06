@@ -44,6 +44,7 @@ class DocxSurgeon:
         self._zip_bytes: bytes = self.path.read_bytes()
         self._tree: etree._Element | None = None
         self._rels_tree: etree._Element | None = None
+        self._content_types_tree: etree._Element | None = None
         self._dirty: bool = False
         self.pending_writes: dict[str, bytes] = {}
         log.info("DocxSurgeon inicializado para: %s", self.path.name)
@@ -61,6 +62,29 @@ class DocxSurgeon:
         if self._rels_tree is None:
             self._rels_tree = self._load_xml(WORD_RELS)
         return self._rels_tree
+
+    @property
+    def content_types_tree(self) -> etree._Element:
+        if self._content_types_tree is None:
+            self._content_types_tree = self._load_xml(CONTENT_TYPES)
+        return self._content_types_tree
+
+    def _ensure_content_type(self, extension: str, content_type: str) -> None:
+        """
+        Asegura que la extension tenga su tipo MIME registrado en [Content_Types].xml.
+        Previene excepciones de KeyError en visores OOXML y python-docx.
+        """
+        ext = extension.lstrip(".").lower()
+        ct_tree = self.content_types_tree
+        ns_ct = "http://schemas.openxmlformats.org/package/2006/content-types"
+        for elem in ct_tree.findall(f".//{{{ns_ct}}}Default"):
+            if (elem.get("Extension") or "").lower() == ext:
+                return
+        nuevo_default = etree.SubElement(ct_tree, f"{{{ns_ct}}}Default")
+        nuevo_default.set("Extension", ext)
+        nuevo_default.set("ContentType", content_type)
+        self._dirty = True
+        log.debug("Registrado nuevo Content-Type en [Content_Types].xml: .%s -> %s", ext, content_type)
 
     def _load_xml(self, member: str) -> etree._Element:
         with zipfile.ZipFile(io.BytesIO(self._zip_bytes)) as z:
@@ -764,8 +788,14 @@ class DocxSurgeon:
         log.info("Reemplazo de imagen preparado: %s", result)
         return result
 
-    def surgical_inject_image(self, xpath_expr: str, new_image_path: str | Path) -> dict[str, Any]:
-        """Inyecta un nuevo nodo <w:drawing> y crea sus relaciones en el DOCX."""
+    def surgical_inject_image(
+        self,
+        xpath_expr: str,
+        new_image_path: str | Path,
+        width_inches: float | None = None,
+        height_inches: float | None = None,
+    ) -> dict[str, Any]:
+        """Inyecta un nuevo nodo <w:drawing> y crea sus relaciones en el DOCX preservando el aspect ratio."""
         rels = self.rels_tree.findall(".//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship")
         max_id = 0
         for rel in rels:
@@ -774,7 +804,8 @@ class DocxSurgeon:
                 try:
                     num = int(rid[3:])
                     max_id = max(max_id, num)
-                except ValueError: pass
+                except ValueError:
+                    pass
         
         new_rid = f"rId{max_id + 1}"
         img_path = Path(new_image_path)
@@ -785,6 +816,22 @@ class DocxSurgeon:
         ext = img_path.suffix.lower() or ".png"
         target_name = f"media/image_injected_{max_id + 1}{ext}"
         zip_target = f"word/{target_name}"
+
+        # 1. Registrar Content-Type en [Content_Types].xml para que el DOCX sea valido
+        ext_clean = ext.lstrip(".").lower()
+        mapa_mime = {
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "png": "image/png",
+            "gif": "image/gif",
+            "bmp": "image/bmp",
+            "tif": "image/tiff",
+            "tiff": "image/tiff",
+            "svg": "image/svg+xml",
+            "webp": "image/webp",
+        }
+        mime_type = mapa_mime.get(ext_clean, "image/png")
+        self._ensure_content_type(ext_clean, mime_type)
         
         new_rel = etree.SubElement(self.rels_tree, "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship")
         new_rel.set("Id", new_rid)
@@ -796,9 +843,45 @@ class DocxSurgeon:
         nodes = self.find_by_xpath(xpath_expr)
         if not nodes:
             return {"success": False, "error": f"XPath no encontró ningún nodo: {xpath_expr}"}
-            
-        cx = 3 * 914400
-        cy = 3 * 914400
+
+        # 2. Obtener dimensiones reales para respetar la proporcion (aspect ratio)
+        ancho_px, alto_px = 300, 300
+        try:
+            from PIL import Image as ImagenPIL
+            with ImagenPIL.open(io.BytesIO(img_bytes)) as img_obj:
+                ancho_px, alto_px = img_obj.size
+        except Exception as err:
+            log.warning("No se pudieron leer dimensiones de la imagen con PIL: %s", err)
+
+        proporcion = ancho_px / max(1, alto_px)
+
+        # 1 pulgada = 914400 EMUs
+        # Limite maximo en pagina estandar (ancho util ~5.5 pulgadas, alto util ~5.0 pulgadas)
+        max_ancho_emu = int(5.5 * 914400)
+        max_alto_emu = int(5.0 * 914400)
+
+        if width_inches is not None and height_inches is not None:
+            cx = int(width_inches * 914400)
+            cy = int(height_inches * 914400)
+        elif width_inches is not None:
+            cx = int(width_inches * 914400)
+            cy = int(cx / proporcion)
+        elif height_inches is not None:
+            cy = int(height_inches * 914400)
+            cx = int(cy * proporcion)
+        else:
+            # Escala natural a 96 DPI acotada por los maximos manteniendo proporcion exacta
+            cx = int((ancho_px / 96.0) * 914400)
+            cy = int((alto_px / 96.0) * 914400)
+            if cx > max_ancho_emu:
+                cx = max_ancho_emu
+                cy = int(cx / proporcion)
+            if cy > max_alto_emu:
+                cy = max_alto_emu
+                cx = int(cy * proporcion)
+
+        cx = max(1, cx)
+        cy = max(1, cy)
         
         drawing_xml = f"""
         <w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -1023,6 +1106,8 @@ class DocxSurgeon:
         self.pending_writes[WORD_DOCUMENT] = new_doc_xml
         if self._rels_tree is not None:
             self.pending_writes[WORD_RELS] = self._serialize_xml(self.rels_tree)
+        if self._content_types_tree is not None:
+            self.pending_writes[CONTENT_TYPES] = self._serialize_xml(self.content_types_tree)
 
         with zipfile.ZipFile(io.BytesIO(self._zip_bytes)) as src_zip:
             names = set(src_zip.namelist())

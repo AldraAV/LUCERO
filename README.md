@@ -51,14 +51,18 @@ LUCERO/
 ## Instalación
 
 ```bash
-# Clonar y entrar al directorio
+# Clonar con submódulos incluidos
+git clone --recurse-submodules https://github.com/AldraAV/LUCERO.git
 cd LUCERO
 
-# Instalar con pnpm (wrapper de pip para entornos Python)
+# Si ya clonaste sin submódulos, inicialízalos:
+git submodule update --init --recursive
+
+# Instalar con dependencias de desarrollo
 pip install -e ".[dev]"
 
 # O directamente con pip
-pip install mcp[cli] lxml python-docx
+pip install mcp[cli] lxml python-docx pyyaml fastapi openpyxl pillow
 ```
 
 ---

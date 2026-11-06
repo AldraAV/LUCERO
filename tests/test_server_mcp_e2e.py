@@ -29,6 +29,7 @@ from src.server import (
     surgical_replace_excel_cell,
     surgical_search_replace_excel,
     surgical_style_edit,
+    surgical_inject_image,
 )
 from tests.test_surgeon import _crear_docx_sintetico
 
@@ -52,6 +53,7 @@ def xlsx_mcp(tmp_path: Path) -> Path:
     ws["B2"] = 100
     ruta = tmp_path / "libro_mcp.xlsx"
     wb.save(str(ruta))
+    wb.close()
     return ruta
 
 
@@ -193,3 +195,23 @@ def test_e2e_surgical_search_replace_excel(xlsx_mcp: Path, tmp_path: Path) -> No
     assert "error:" not in res.lower()
     assert "total_reemplazos: 1" in res
     assert salida.exists()
+
+
+def test_e2e_surgical_inject_image(docx_mcp: Path, tmp_path: Path) -> None:
+    """Valida la herramienta MCP surgical_inject_image con cálculo automático de aspecto."""
+    from PIL import Image as PILImage
+    img_path = tmp_path / "foto.png"
+    img = PILImage.new("RGBA", (300, 150), color=(225, 29, 72, 255))
+    img.save(str(img_path), "PNG")
+
+    salida = tmp_path / "docx_inyectado.docx"
+    res = surgical_inject_image(
+        docx_path=str(docx_mcp),
+        xpath_expr="//w:body//w:p[1]",
+        new_image_path=str(img_path),
+        output_path=str(salida),
+    )
+    assert "error:" not in res.lower()
+    assert "success: true" in res.lower() or '"success": true' in res.lower()
+    assert salida.exists()
+    assert salida.stat().st_size > 0

@@ -93,15 +93,23 @@ class WriteTool(Tool):
                 section.left_margin = Inches(1)
                 section.right_margin = Inches(1)
                 
-                # Número de página en el encabezado alineado a la derecha
+                # Número de página en el encabezado alineado a la derecha (hijo directo de w:p)
                 header = section.header
                 hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
                 hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                hrun = hp.add_run()
-                hrun.font.name = 'Times New Roman'
-                hrun.font.size = Pt(12)
-                fldSimple = parse_xml(r'<w:fldSimple %s w:instr="PAGE"/>' % nsdecls('w'))
-                hrun._r.append(fldSimple)
+                fldSimple = parse_xml(
+                    r'<w:fldSimple %s w:instr="PAGE">'
+                    r'<w:r>'
+                    r'<w:rPr>'
+                    r'<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/>'
+                    r'<w:sz w:val="24"/>'
+                    r'<w:szCs w:val="24"/>'
+                    r'</w:rPr>'
+                    r'<w:t>1</w:t>'
+                    r'</w:r>'
+                    r'</w:fldSimple>' % nsdecls('w')
+                )
+                hp._p.append(fldSimple)
 
             # Estilo Normal base APA 7
             estilo_normal = doc.styles['Normal']

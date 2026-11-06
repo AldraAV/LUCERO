@@ -67,7 +67,11 @@ class XlsxSurgeon:
 
         self.ruta: Path | None = Path(ruta_excel) if ruta_excel else None
         self.solo_lectura: bool = solo_lectura
-        self.mantener_vba: bool = mantener_vba
+        # Solo activar keep_vba en archivos que admiten macros (.xlsm, .xltm).
+        # En .xlsx estandar, openpyxl intenta abrir vbaProject.bin y deja un ZipFile
+        # huerfano que causa bloqueos y PytestUnraisableExceptionWarning en Windows.
+        es_vba = self.ruta.suffix.lower() in {".xlsm", ".xltm"} if self.ruta else False
+        self.mantener_vba: bool = mantener_vba and es_vba
         self._libro: Any | None = None
         self._modificado: bool = False
 
@@ -526,6 +530,26 @@ class XlsxSurgeon:
         self._modificado = False
         registro.info("Libro guardado exitosamente.")
         return destino.resolve()
+
+    def close(self) -> None:
+        """
+        Cierra el libro de openpyxl y libera los descriptores de archivo y ZipFile asociados.
+        Indispensable en Windows para evitar bloqueos de archivo y excepciones en el recolector de basura.
+        """
+        if self._libro is not None:
+            try:
+                self._libro.close()
+                registro.debug("Workbook de openpyxl cerrado correctamente.")
+            except Exception as err:
+                registro.warning("Advertencia al cerrar el workbook: %s", err)
+            finally:
+                self._libro = None
+
+    def __enter__(self) -> "XlsxSurgeon":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
 
 # Alias soberano en espanol

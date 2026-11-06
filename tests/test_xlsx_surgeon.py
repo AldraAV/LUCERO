@@ -89,13 +89,14 @@ def libro_temporal(tmp_path: Path) -> Path:
 
     ruta_archivo = tmp_path / "libro_prueba.xlsx"
     wb.save(str(ruta_archivo))
+    wb.close()
     return ruta_archivo
 
 
 def test_inspeccionar_hojas(libro_temporal: Path) -> None:
     """Debe listar correctamente las hojas y sus metadatos."""
-    cirujano = XlsxSurgeon(libro_temporal, solo_lectura=True)
-    hojas = cirujano.inspeccionar_hojas()
+    with XlsxSurgeon(libro_temporal, solo_lectura=True) as cirujano:
+        hojas = cirujano.inspeccionar_hojas()
 
     assert len(hojas) == 2
     nombres = [h["nombre"] for h in hojas]
@@ -109,8 +110,8 @@ def test_inspeccionar_hojas(libro_temporal: Path) -> None:
 
 def test_inspeccionar_celdas(libro_temporal: Path) -> None:
     """Debe extraer detalles de celda, formulas y estilos."""
-    cirujano = XlsxSurgeon(libro_temporal, solo_lectura=True)
-    resultado = cirujano.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="B2")
+    with XlsxSurgeon(libro_temporal, solo_lectura=True) as cirujano:
+        resultado = cirujano.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="B2")
 
     assert resultado["total_celdas"] == 1
     celda = resultado["celdas"][0]
@@ -123,23 +124,22 @@ def test_inspeccionar_celdas(libro_temporal: Path) -> None:
 
 def test_reemplazar_celda_quirurgica_preserva_estilo(libro_temporal: Path) -> None:
     """Debe modificar el valor de la celda conservando intacto su estilo."""
-    cirujano = XlsxSurgeon(libro_temporal)
-    informe = cirujano.reemplazar_celda_quirurgica(
-        nombre_hoja="Finanzas",
-        coordenada="B2",
-        nuevo_valor="3500",
-    )
+    with XlsxSurgeon(libro_temporal) as cirujano:
+        informe = cirujano.reemplazar_celda_quirurgica(
+            nombre_hoja="Finanzas",
+            coordenada="B2",
+            nuevo_valor="3500",
+        )
+        ruta_salida = cirujano.guardar()
 
     assert informe["valor_anterior"] == "1500"
     assert informe["valor_nuevo"] == "3500"
     assert informe["estilo_preservado"] is True
-
-    ruta_salida = cirujano.guardar()
     assert ruta_salida.exists()
 
     # Recargar y verificar que el estilo no sufrio corrupcion
-    cirujano_reabierto = XlsxSurgeon(ruta_salida, solo_lectura=True)
-    celda_mod = cirujano_reabierto.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="B2")["celdas"][0]
+    with XlsxSurgeon(ruta_salida, solo_lectura=True) as cirujano_reabierto:
+        celda_mod = cirujano_reabierto.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="B2")["celdas"][0]
     assert celda_mod["valor"] == "3500"
     assert celda_mod["estilo"]["formato_numero"] == "$#,##0.00"
     assert celda_mod["estilo"]["fuente"]["nombre"] == "JetBrains Mono"
@@ -148,19 +148,19 @@ def test_reemplazar_celda_quirurgica_preserva_estilo(libro_temporal: Path) -> No
 
 def test_reemplazar_celda_con_formula(libro_temporal: Path) -> None:
     """Debe permitir inyectar o modificar formulas."""
-    cirujano = XlsxSurgeon(libro_temporal)
-    informe = cirujano.reemplazar_celda_quirurgica(
-        nombre_hoja="Finanzas",
-        coordenada="B5",
-        nuevo_valor="=SUM(B2:B3)",
-        es_formula=True,
-    )
+    with XlsxSurgeon(libro_temporal) as cirujano:
+        informe = cirujano.reemplazar_celda_quirurgica(
+            nombre_hoja="Finanzas",
+            coordenada="B5",
+            nuevo_valor="=SUM(B2:B3)",
+            es_formula=True,
+        )
+        ruta_guardada = cirujano.guardar()
 
     assert informe["valor_nuevo"] == "=SUM(B2:B3)"
-    ruta_guardada = cirujano.guardar()
 
-    cirujano_verif = XlsxSurgeon(ruta_guardada, solo_lectura=True)
-    info_b5 = cirujano_verif.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="B5")["celdas"][0]
+    with XlsxSurgeon(ruta_guardada, solo_lectura=True) as cirujano_verif:
+        info_b5 = cirujano_verif.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="B5")["celdas"][0]
     assert info_b5["es_formula"] is True
     assert info_b5["valor"] == "=SUM(B2:B3)"
 
@@ -168,69 +168,66 @@ def test_reemplazar_celda_con_formula(libro_temporal: Path) -> None:
 def test_inyectar_tabla_quirurgica(tmp_path: Path) -> None:
     """Debe inyectar tablas completas con formato sobrio de forma limpia."""
     archivo_nuevo = tmp_path / "tabla_inyectada.xlsx"
-    cirujano = XlsxSurgeon()  # Nuevo en memoria
+    with XlsxSurgeon() as cirujano:  # Nuevo en memoria
+        encabezados = ["ID", "Producto", "Cantidad", "Precio Unitario"]
+        filas = [
+            ["P-001", "Sensor Optico", 10, 45.50],
+            ["P-002", "Controlador Micro", 5, 120.00],
+            ["P-003", "Modulo Rele", 20, 15.25],
+        ]
 
-    encabezados = ["ID", "Producto", "Cantidad", "Precio Unitario"]
-    filas = [
-        ["P-001", "Sensor Optico", 10, 45.50],
-        ["P-002", "Controlador Micro", 5, 120.00],
-        ["P-003", "Modulo Rele", 20, 15.25],
-    ]
-
-    informe = cirujano.inyectar_tabla_quirurgica(
-        nombre_hoja=None,  # hoja activa
-        celda_inicio="B3",
-        encabezados=encabezados,
-        filas=filas,
-        nombre_tabla="InventarioSensores",
-        aplicar_estilo_aurora=True,
-    )
+        informe = cirujano.inyectar_tabla_quirurgica(
+            nombre_hoja=None,  # hoja activa
+            celda_inicio="B3",
+            encabezados=encabezados,
+            filas=filas,
+            nombre_tabla="InventarioSensores",
+            aplicar_estilo_aurora=True,
+        )
+        ruta_guardada = cirujano.guardar(archivo_nuevo)
 
     assert informe["total_filas_datos"] == 3
     assert informe["total_columnas"] == 4
     assert informe["rango_inyectado"] == "B3:E6"
-
-    ruta_guardada = cirujano.guardar(archivo_nuevo)
     assert ruta_guardada.exists()
 
     # Verificar lectura
-    cirujano_lectura = XlsxSurgeon(ruta_guardada)
-    hojas = cirujano_lectura.inspeccionar_hojas()
+    with XlsxSurgeon(ruta_guardada) as cirujano_lectura:
+        hojas = cirujano_lectura.inspeccionar_hojas()
     assert hojas[0]["total_tablas"] == 1
     assert "InventarioSensores" in hojas[0]["nombres_tablas"]
 
 
 def test_buscar_y_reemplazar(libro_temporal: Path) -> None:
     """Debe reemplazar texto respetando la integridad de todas las celdas."""
-    cirujano = XlsxSurgeon(libro_temporal)
-    res = cirujano.buscar_y_reemplazar(
-        texto_buscar="Pagado",
-        texto_reemplazo="Liquidado",
-    )
+    with XlsxSurgeon(libro_temporal) as cirujano:
+        res = cirujano.buscar_y_reemplazar(
+            texto_buscar="Pagado",
+            texto_reemplazo="Liquidado",
+        )
+        ruta_salida = cirujano.guardar()
 
     assert res["total_reemplazos"] == 2
-    ruta_salida = cirujano.guardar()
 
-    cirujano_revisado = XlsxSurgeon(ruta_salida, solo_lectura=True)
-    c3 = cirujano_revisado.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="C2")["celdas"][0]
-    c4 = cirujano_revisado.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="C4")["celdas"][0]
+    with XlsxSurgeon(ruta_salida, solo_lectura=True) as cirujano_revisado:
+        c3 = cirujano_revisado.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="C2")["celdas"][0]
+        c4 = cirujano_revisado.inspeccionar_celdas(nombre_hoja="Finanzas", rango_celdas="C4")["celdas"][0]
     assert c3["valor"] == "Liquidado"
     assert c4["valor"] == "Liquidado"
 
 
 def test_errores_esperados(libro_temporal: Path) -> None:
     """Debe lanzar excepciones semanticas descriptivas."""
-    cirujano = XlsxSurgeon(libro_temporal)
+    with XlsxSurgeon(libro_temporal) as cirujano:
+        with pytest.raises(ErrorHojaNoEncontrada):
+            cirujano.inspeccionar_celdas(nombre_hoja="HojaFantasma")
 
-    with pytest.raises(ErrorHojaNoEncontrada):
-        cirujano.inspeccionar_celdas(nombre_hoja="HojaFantasma")
-
-    with pytest.raises(ErrorCeldaInvalida):
-        cirujano.reemplazar_celda_quirurgica(
-            nombre_hoja="Finanzas",
-            coordenada="ZZZZZZ$$$Invalida",
-            nuevo_valor="Test",
-        )
+        with pytest.raises(ErrorCeldaInvalida):
+            cirujano.reemplazar_celda_quirurgica(
+                nombre_hoja="Finanzas",
+                coordenada="ZZZZZZ$$$Invalida",
+                nuevo_valor="Test",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

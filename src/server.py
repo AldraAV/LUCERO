@@ -478,13 +478,20 @@ def surgical_inject_image(
     docx_path: Annotated[str, "Ruta al .docx a operar"],
     xpath_expr: Annotated[str, "XPath exacto del párrafo (w:p) donde inyectar la imagen"],
     new_image_path: Annotated[str, "Ruta a la nueva imagen local"],
+    width_inches: Annotated[float | None, "Ancho deseado en pulgadas (opcional, preserva proporción)"] = None,
+    height_inches: Annotated[float | None, "Alto deseado en pulgadas (opcional, preserva proporción)"] = None,
     output_path: Annotated[str | None, "Ruta de salida. Si es None sobreescribe el original"] = None,
 ) -> str:
-    """Inyecta una imagen completamente nueva en el párrafo especificado."""
+    """Inyecta una imagen completamente nueva en el párrafo especificado con preservación de proporciones."""
     log.info("[TOOL] surgical_inject_image: %s en %s", new_image_path, xpath_expr)
     try:
         surgeon = DocxSurgeon(docx_path)
-        inject_result = surgeon.surgical_inject_image(xpath_expr, new_image_path)
+        inject_result = surgeon.surgical_inject_image(
+            xpath_expr=xpath_expr,
+            new_image_path=new_image_path,
+            width_inches=width_inches,
+            height_inches=height_inches,
+        )
         
         if not inject_result.get("success", False):
             return json.dumps(inject_result, ensure_ascii=False, indent=2)
@@ -1099,13 +1106,13 @@ def inspect_excel_sheets(
     log.info("[TOOL] inspect_excel_sheets: %s", excel_path)
     try:
         from src.xlsx_surgeon import XlsxSurgeon
-        cirujano = XlsxSurgeon(excel_path, solo_lectura=False)
-        hojas = cirujano.inspeccionar_hojas()
-        return json.dumps({
-            "archivo": Path(excel_path).name,
-            "total_hojas": len(hojas),
-            "hojas": hojas,
-        }, ensure_ascii=False)
+        with XlsxSurgeon(excel_path, solo_lectura=False) as cirujano:
+            hojas = cirujano.inspeccionar_hojas()
+            return json.dumps({
+                "archivo": Path(excel_path).name,
+                "total_hojas": len(hojas),
+                "hojas": hojas,
+            }, ensure_ascii=False)
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_excel_sheets: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1127,13 +1134,13 @@ def inspect_excel_cells(
              excel_path, sheet_name, cell_range, max_rows)
     try:
         from src.xlsx_surgeon import XlsxSurgeon
-        cirujano = XlsxSurgeon(excel_path, solo_lectura=False)
-        resultado = cirujano.inspeccionar_celdas(
-            nombre_hoja=sheet_name,
-            rango_celdas=cell_range,
-            max_filas=max_rows,
-        )
-        return json.dumps(resultado, ensure_ascii=False)
+        with XlsxSurgeon(excel_path, solo_lectura=False) as cirujano:
+            resultado = cirujano.inspeccionar_celdas(
+                nombre_hoja=sheet_name,
+                rango_celdas=cell_range,
+                max_filas=max_rows,
+            )
+            return json.dumps(resultado, ensure_ascii=False)
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_excel_cells: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1157,17 +1164,17 @@ def surgical_replace_excel_cell(
              excel_path, sheet_name or "activa", coordinate, new_value)
     try:
         from src.xlsx_surgeon import XlsxSurgeon
-        cirujano = XlsxSurgeon(excel_path)
-        hoja_real = sheet_name or cirujano.libro.active.title
-        informe = cirujano.reemplazar_celda_quirurgica(
-            nombre_hoja=hoja_real,
-            coordenada=coordinate,
-            nuevo_valor=new_value,
-            es_formula=is_formula,
-        )
-        ruta_salida = cirujano.guardar(output_path)
-        informe["archivo_guardado"] = str(ruta_salida)
-        return json.dumps(informe, ensure_ascii=False)
+        with XlsxSurgeon(excel_path) as cirujano:
+            hoja_real = sheet_name or cirujano.libro.active.title
+            informe = cirujano.reemplazar_celda_quirurgica(
+                nombre_hoja=hoja_real,
+                coordenada=coordinate,
+                nuevo_valor=new_value,
+                es_formula=is_formula,
+            )
+            ruta_salida = cirujano.guardar(output_path)
+            informe["archivo_guardado"] = str(ruta_salida)
+            return json.dumps(informe, ensure_ascii=False)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_replace_excel_cell: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1193,19 +1200,19 @@ def surgical_inject_excel_table(
              excel_path, sheet_name or "activa", start_cell, len(headers), len(rows))
     try:
         from src.xlsx_surgeon import XlsxSurgeon
-        cirujano = XlsxSurgeon(excel_path)
-        hoja_real = sheet_name or cirujano.libro.active.title
-        informe = cirujano.inyectar_tabla_quirurgica(
-            nombre_hoja=hoja_real,
-            celda_inicio=start_cell,
-            encabezados=headers,
-            filas=rows,
-            nombre_tabla=table_name,
-            aplicar_estilo_aurora=apply_aurora_style,
-        )
-        ruta_salida = cirujano.guardar(output_path)
-        informe["archivo_guardado"] = str(ruta_salida)
-        return json.dumps(informe, ensure_ascii=False)
+        with XlsxSurgeon(excel_path) as cirujano:
+            hoja_real = sheet_name or cirujano.libro.active.title
+            informe = cirujano.inyectar_tabla_quirurgica(
+                nombre_hoja=hoja_real,
+                celda_inicio=start_cell,
+                encabezados=headers,
+                filas=rows,
+                nombre_tabla=table_name,
+                aplicar_estilo_aurora=apply_aurora_style,
+            )
+            ruta_salida = cirujano.guardar(output_path)
+            informe["archivo_guardado"] = str(ruta_salida)
+            return json.dumps(informe, ensure_ascii=False)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_inject_excel_table: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1228,16 +1235,19 @@ def surgical_search_replace_excel(
              excel_path, search_text, replace_text)
     try:
         from src.xlsx_surgeon import XlsxSurgeon
-        cirujano = XlsxSurgeon(excel_path)
-        informe = cirujano.buscar_y_reemplazar(
-            texto_buscar=search_text,
-            texto_reemplazo=replace_text,
-            nombre_hoja=sheet_name,
-            coincidencia_exacta=exact_match,
-        )
-        ruta_salida = cirujano.guardar(output_path)
-        informe["archivo_guardado"] = str(ruta_salida)
-        return json.dumps(informe, ensure_ascii=False)
+        with XlsxSurgeon(excel_path) as cirujano:
+            informe = cirujano.buscar_y_reemplazar(
+                texto_buscar=search_text,
+                texto_reemplazo=replace_text,
+                nombre_hoja=sheet_name,
+                coincidencia_exacta=exact_match,
+            )
+            ruta_salida = cirujano.guardar(output_path)
+            informe["archivo_guardado"] = str(ruta_salida)
+            return json.dumps(informe, ensure_ascii=False)
+    except Exception as exc:
+        log.error("[TOOL ERROR] surgical_search_replace_excel: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_search_replace_excel: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)

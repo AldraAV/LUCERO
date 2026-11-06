@@ -21,23 +21,28 @@ def _w(tag: str) -> str:
 
 def _make_run(text: str, bold: bool = False, italic: bool = False,
               font_size_half: int = 24) -> etree._Element:
-    """Crea un <w:r> con formato básico según APA 7 (Times New Roman 12pt)."""
+    """Crea un <w:r> con formato básico según APA 7 (Times New Roman 12pt) y orden canónico OOXML en rPr."""
     run = etree.Element(_w("r"))
     rpr = etree.SubElement(run, _w("rPr"))
-    if bold:
-        etree.SubElement(rpr, _w("b"))
-    if italic:
-        etree.SubElement(rpr, _w("i"))
-
-    sz = etree.SubElement(rpr, _w("sz"))
+    
+    # 1. rFonts DEBE ir antes de b, i, sz en el esquema OOXML
     rFonts = etree.SubElement(rpr, _w("rFonts"))
     rFonts.set(_w("ascii"), "Times New Roman")
     rFonts.set(_w("hAnsi"), "Times New Roman")
     rFonts.set(_w("cs"), "Times New Roman")
 
+    # 2. b e i
+    if bold:
+        etree.SubElement(rpr, _w("b"))
+    if italic:
+        etree.SubElement(rpr, _w("i"))
+
+    # 3. sz y szCs
+    sz = etree.SubElement(rpr, _w("sz"))
     sz.set(_w("val"), str(font_size_half))
     sz_cs = etree.SubElement(rpr, _w("szCs"))
     sz_cs.set(_w("val"), str(font_size_half))
+
     t = etree.SubElement(run, _w("t"))
     t.text = text
     if text.startswith(" ") or text.endswith(" "):
