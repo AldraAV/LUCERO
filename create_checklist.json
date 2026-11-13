@@ -1,0 +1,1 @@
+{"name":"create_checklist","description":"\n    Analiza un documento de directrices, requerimientos o contrato y genera una lista de verificación (checklist)\n    de tareas e hitos estructurada en JSON.\n    ","parameters":{"properties":{"document_path":{"title":"Document Path","type":"string"}},"required":["document_path"],"title":"create_checklistArguments","type":"object"}}

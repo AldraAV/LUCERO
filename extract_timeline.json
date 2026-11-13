@@ -1,0 +1,1 @@
+{"name":"extract_timeline","description":"\n    Extrae todos los eventos con fecha de un documento de forma estructurada y los ordena cronológicamente.\n    ","parameters":{"properties":{"document_path":{"title":"Document Path","type":"string"}},"required":["document_path"],"title":"extract_timelineArguments","type":"object"}}

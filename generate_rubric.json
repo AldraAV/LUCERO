@@ -1,0 +1,1 @@
+{"name":"generate_rubric","description":"\n    Crea una tabla estructurada de rúbrica de evaluación con criterios, niveles de desempeño\n    y ponderaciones basados en el texto provisto.\n    ","parameters":{"properties":{"document_path":{"title":"Document Path","type":"string"}},"required":["document_path"],"title":"generate_rubricArguments","type":"object"}}

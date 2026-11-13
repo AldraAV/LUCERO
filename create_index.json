@@ -1,0 +1,1 @@
+{"name":"create_index","description":"\n    Genera un índice temático y conceptual estructurado de temas clave discutidos en el documento.\n    ","parameters":{"properties":{"document_path":{"title":"Document Path","type":"string"}},"required":["document_path"],"title":"create_indexArguments","type":"object"}}

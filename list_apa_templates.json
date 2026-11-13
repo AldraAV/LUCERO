@@ -1,0 +1,1 @@
+{"name":"list_apa_templates","description":"\n    Devuelve el catálogo completo de plantillas APA 7ª disponibles\n    para inject_apa_structure, con su descripción y parámetros especiales.\n    ","parameters":{"properties":{},"title":"list_apa_templatesArguments","type":"object"}}

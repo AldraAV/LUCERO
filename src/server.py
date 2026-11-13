@@ -9,47 +9,38 @@ from __future__ import annotations
 # El protocolo MCP usa stdout para JSON-RPC. Cualquier texto no-JSON en stdout
 # rompe clientes como Opencode con "Unexpected non-whitespace character after JSON".
 import sys
-
 import structlog
 
 structlog.configure(
     logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
 )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 import json
 from pathlib import Path
 from typing import Annotated, Any
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 
-from src.apa_templates import (
+from .apa_templates import (
     TEMPLATE_CATALOG,
     apa_body_paragraph,
-    apa_centered_text,
     apa_figure_label,
     apa_figure_note,
     apa_heading1,
     apa_heading2,
     apa_heading3,
-    apa_heading4,
-    apa_heading5,
-    apa_page_break,
+    apa_in_text_citation,
     apa_reference_entry,
 )
-from src.surgeon import DocxSurgeon
-from src.utils import get_logger, qn
+from .surgeon import DocxSurgeon
+from .pptx_surgeon import PptxSurgeon
+from .excel_surgeon import ExcelSurgeon
+from .utils import JsonDict, get_logger
 
 log = get_logger("lucero.server")
-
-from src.utils import export_toon
-
-
-def _custom_dumps(obj, *args, **kwargs):
-    return export_toon(obj)
-
-json.dumps = _custom_dumps
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INSTANCIA MCP
@@ -57,14 +48,12 @@ json.dumps = _custom_dumps
 mcp = FastMCP(
     name="LUCERO",
     instructions=(
-        "Servidor MCP de manipulacion quirurgica de documentos (DOCX, PPTX y XLSX).\n"
-        "Opera directamente sobre el XML interno (ECMA-376) usando XPath\n"
-        "para garantizar precision de nodo y zero format loss.\n\n"
-        "Flujo recomendado:\n"
-        "1. inspect_xml_tree  → Ver estructura real del documento\n"
-        "2. surgical_replace  → Cambiar texto sin tocar el formato\n"
-        "3. inject_apa_structure → Insertar bloques académicos APA 7\n"
-        "4. commit_changes    → Guardar el DOCX final sin corromperlo\n"
+        "Servidor MCP de manipulacion quirurgica de documentos .docx y presentaciones .pptx (PPT-Master).\n"
+        "Opera directamente sobre el XML interno (ECMA-376) y DrawingML con precision de nodo y zero format loss.\n\n"
+        "Capacidades integradas:\n"
+        "1. DOCX (LUCERO Core): inspect_xml_tree, surgical_replace, inject_apa_structure, commit_changes\n"
+        "2. PPTX (PPT-Master Hermano): pptx_inspect_slides, pptx_surgical_replace, pptx_inject_image, "
+        "pptx_compile_from_svg, pptx_render_latex, pptx_to_markdown, pptx_to_svg\n"
     ),
 )
 
@@ -207,10 +196,6 @@ def inject_apa_structure(
                 nodes = [apa_heading2(content)]
             case "heading3":
                 nodes = [apa_heading3(content)]
-            case "heading4":
-                nodes = [apa_heading4(content)]
-            case "heading5":
-                nodes = [apa_heading5(content)]
             case "body_paragraph":
                 nodes = [apa_body_paragraph(content)]
             case "figure_label":
@@ -221,10 +206,6 @@ def inject_apa_structure(
                 nodes = [apa_figure_note(note)]
             case "reference":
                 nodes = [apa_reference_entry(content)]
-            case "centered_text":
-                nodes = [apa_centered_text(content)]
-            case "page_break":
-                nodes = [apa_page_break()]
             case _:
                 available = list(TEMPLATE_CATALOG.keys())
                 return json.dumps({
@@ -285,6 +266,173 @@ def commit_changes(
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] commit_changes: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOOL 4.1: insertar_parrafo_clonado
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def insertar_parrafo_clonado(
+    docx_path: Annotated[str, "Ruta al .docx objetivo"],
+    texto_ancla: Annotated[str, "Texto del párrafo ancla del cual clonar el formato"],
+    segmentos: Annotated[list[str], "Textos de los runs del nuevo párrafo"],
+    posicion: Annotated[str, "'antes' o 'despues'"] = "despues",
+    aparicion: Annotated[int, "Qué aparición del párrafo ancla usar (1-based)"] = 1,
+    output_path: Annotated[str | None, "Ruta de salida (None = sobreescribir)"] = None,
+) -> str:
+    """
+    Crea un nuevo párrafo clonando exactamente las propiedades (pPr: viñeta, sangría,
+    estilo) del párrafo ancla, asignando a cada segmento el formato (rPr) de los runs
+    del ancla. Garantiza que párrafos insertados tengan exactamente la misma estética.
+    """
+    log.info("[TOOL] insertar_parrafo_clonado en %s (ancla=%r, pos=%s)", docx_path, texto_ancla, posicion)
+    try:
+        surgeon = DocxSurgeon(docx_path)
+        inject_res = surgeon.insertar_parrafo_clonado(
+            texto_ancla=texto_ancla,
+            segmentos=segmentos,
+            posicion=posicion,
+            aparicion=aparicion,
+        )
+        if not inject_res.get("success"):
+            return json.dumps(inject_res, ensure_ascii=False, indent=2)
+
+        commit_res = surgeon.commit_changes(output_path)
+        return json.dumps({
+            "success": True,
+            "inject": inject_res,
+            "commit": commit_res,
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] insertar_parrafo_clonado: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOOL 4.2: lote_quirurgico
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def lote_quirurgico(
+    docx_path: Annotated[str, "Ruta al .docx objetivo"],
+    operaciones: Annotated[list[dict[str, Any]], (
+        "Lista de operaciones ordenadas:\n"
+        "- {'tipo': 'reemplazar', 'objetivo': str, 'reemplazo': str, 'aparicion': int, 'esperadas': int}\n"
+        "- {'tipo': 'insertar', 'ancla': str, 'segmentos': list[str], 'posicion': 'despues'|'antes', 'aparicion': int}"
+    )],
+    output_path: Annotated[str | None, "Ruta de salida (None = sobreescribir)"] = None,
+    simulacion: Annotated[bool, "Si True, ejecuta en memoria y retorna el plan sin escribir a disco"] = False,
+) -> str:
+    """
+    Ejecuta un conjunto atómico de reemplazos e inserciones en memoria.
+    Si cualquier operación falla (p. ej. texto no encontrado o apariciones esperadas no coinciden),
+    se cancela todo y NO se toca el archivo.
+    Si todas triunfan y simulacion=False, realiza un único commit con respaldo automático.
+    """
+    log.info("[TOOL] lote_quirurgico en %s (%d operaciones, simulacion=%s)",
+             docx_path, len(operaciones), simulacion)
+    try:
+        surgeon = DocxSurgeon(docx_path)
+        resultado_lote = surgeon.aplicar_lote(operaciones)
+        if not resultado_lote.get("exito"):
+            return json.dumps({
+                "success": False,
+                "reason": f"El lote falló en la operación #{resultado_lote.get('fallo_en')}",
+                "detail": resultado_lote,
+            }, ensure_ascii=False, indent=2)
+
+        if simulacion:
+            return json.dumps({
+                "success": True,
+                "simulacion": True,
+                "operaciones_ejecutadas": len(operaciones),
+                "detail": resultado_lote,
+            }, ensure_ascii=False, indent=2)
+
+        commit_res = surgeon.commit_changes(output_path)
+        return json.dumps({
+            "success": True,
+            "simulacion": False,
+            "operaciones_ejecutadas": len(operaciones),
+            "detail": resultado_lote,
+            "commit": commit_res,
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] lote_quirurgico: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOOL 4.3: ensamblar_documento_maestro
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def ensamblar_documento_maestro(
+    docx_plantilla: Annotated[str, "Ruta al .docx plantilla maestro (ej. Indice LTHDA)"],
+    docx_hoja_presentacion: Annotated[str, "Ruta al .docx con la hoja membretada oficial"],
+    docx_contenido_cuerpo: Annotated[str, "Ruta al .docx con el cuerpo desarrollado"],
+    output_path: Annotated[str | None, "Ruta de salida (None = sobreescribir la plantilla)"] = None,
+    limite_portada_parrafos: Annotated[int, "Máximo de párrafos de portada a extraer"] = 30,
+    ancla_indice: Annotated[str, "Texto que identifica el inicio del índice"] = "Índice",
+    ancla_cuerpo: Annotated[str, "Texto que identifica el inicio del cuerpo"] = "Resumen",
+    identificador_cuerpo: Annotated[str, "Palabra clave para desambiguar el cuerpo real"] = "EmpleaTEC",
+) -> str:
+    """
+    Ensambla quirúrgicamente una plantilla maestra con portada institucional y cuerpo completo:
+    - Extrae la portada oficial y transplanta los logos a word/media remapeando sus relaciones rId.
+    - Preserva intacto el Índice oficial de la plantilla docente.
+    - Sustituye las instrucciones de la plantilla por el contenido desarrollado formal en APA 7
+      (Times New Roman 12, justificado, 1.5 interlineado y sangría francesa en bibliografía).
+    - Ejecuta un commit seguro con respaldo automático timestamped.
+    """
+    log.info("[TOOL] ensamblar_documento_maestro en %s", docx_plantilla)
+    try:
+        surgeon = DocxSurgeon(docx_plantilla)
+        res_ensamblado = surgeon.ensamblar_plantilla_maestra(
+            ruta_hoja_presentacion=docx_hoja_presentacion,
+            ruta_contenido_cuerpo=docx_contenido_cuerpo,
+            limite_portada_parrafos=limite_portada_parrafos,
+            ancla_indice=ancla_indice,
+            ancla_cuerpo_destino=ancla_cuerpo,
+            ancla_cuerpo_origen=ancla_cuerpo,
+            identificador_cuerpo_origen=identificador_cuerpo,
+        )
+        if not res_ensamblado.get("success"):
+            return json.dumps(res_ensamblado, ensure_ascii=False, indent=2)
+
+        commit_res = surgeon.commit_changes(output_path)
+        return json.dumps({
+            "success": True,
+            "ensamblado": res_ensamblado,
+            "commit": commit_res,
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] ensamblar_documento_maestro: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOOL 4.4: exportar_a_markdown
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def exportar_a_markdown(
+    docx_path: Annotated[str, "Ruta al archivo .docx a convertir en Markdown"],
+    output_path: Annotated[str | None, "Ruta de salida para el archivo .md (None = mismo nombre .md)"] = None,
+) -> str:
+    """
+    Convierte un documento .docx a formato Markdown usando el motor MarkItDown,
+    preservando encabezados, tablas, listas y enlaces sin modificar ni borrar el DOCX original.
+    """
+    log.info("[TOOL] exportar_a_markdown en %s -> %s", docx_path, output_path)
+    try:
+        surgeon = DocxSurgeon(docx_path)
+        res = surgeon.exportar_a_markdown(output_path)
+        return json.dumps(res, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] exportar_a_markdown: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
@@ -478,20 +626,13 @@ def surgical_inject_image(
     docx_path: Annotated[str, "Ruta al .docx a operar"],
     xpath_expr: Annotated[str, "XPath exacto del párrafo (w:p) donde inyectar la imagen"],
     new_image_path: Annotated[str, "Ruta a la nueva imagen local"],
-    width_inches: Annotated[float | None, "Ancho deseado en pulgadas (opcional, preserva proporción)"] = None,
-    height_inches: Annotated[float | None, "Alto deseado en pulgadas (opcional, preserva proporción)"] = None,
     output_path: Annotated[str | None, "Ruta de salida. Si es None sobreescribe el original"] = None,
 ) -> str:
-    """Inyecta una imagen completamente nueva en el párrafo especificado con preservación de proporciones."""
+    """Inyecta una imagen completamente nueva en el párrafo especificado."""
     log.info("[TOOL] surgical_inject_image: %s en %s", new_image_path, xpath_expr)
     try:
         surgeon = DocxSurgeon(docx_path)
-        inject_result = surgeon.surgical_inject_image(
-            xpath_expr=xpath_expr,
-            new_image_path=new_image_path,
-            width_inches=width_inches,
-            height_inches=height_inches,
-        )
+        inject_result = surgeon.surgical_inject_image(xpath_expr, new_image_path)
         
         if not inject_result.get("success", False):
             return json.dumps(inject_result, ensure_ascii=False, indent=2)
@@ -540,9 +681,8 @@ def inject_toc(
     log.info("[TOOL] inject_toc: anchor=%r, range=%s, position=%s",
              anchor_text, heading_range, position)
     try:
-        from copy import deepcopy
-
         from lxml import etree as _etree
+        from copy import deepcopy
 
         surgeon = DocxSurgeon(docx_path)
         body = surgeon.tree.find(qn("w", "body"))
@@ -660,9 +800,8 @@ def inject_toc(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
+from .mcp_documents.core.executor import ToolExecutor
 import json
-
-from src.mcp_documents.core.executor import ToolExecutor
 
 lucero_executor = ToolExecutor()
 
@@ -703,10 +842,15 @@ async def pro_write_document(
 @mcp.tool()
 async def pro_transform_document(
     source_path: Annotated[str, "Path to source document"],
-    target_format: Annotated[str, "Target format: pdf, docx, md"]
+    target_format: Annotated[str, "Target format: pdf, docx, md"],
+    output_path: Annotated[str | None, "Optional custom output path"] = None
 ) -> str:
-    """Convert between document formats (e.g., DOCX to PDF, DOCX to MD)."""
-    res = await lucero_executor.execute("mcp", "transform_document", {"source_path": source_path, "target_format": target_format})
+    """Convert between document formats (e.g., DOCX to PDF, DOCX to MD) using Microsoft MarkItDown for MD."""
+    res = await lucero_executor.execute("mcp", "transform_document", {
+        "source_path": source_path,
+        "target_format": target_format,
+        "output_path": output_path
+    })
     return json.dumps(res, ensure_ascii=False, indent=2)
 
 @mcp.tool()
@@ -732,7 +876,7 @@ async def compare_documents(
     Compara de forma inteligente múltiples documentos de gestión pública para identificar
     puntos en común, contradicciones explícitas y vacíos de información (gaps).
     """
-    from src.herramientas_elite import comparar_documentos_impl
+    from .herramientas_elite import comparar_documentos_impl
     log.info("[TOOL] compare_documents: %d archivos", len(document_paths))
     try:
         res = await comparar_documentos_impl(document_paths, ctx=ctx)
@@ -752,7 +896,7 @@ async def extract_selective(
     Extrae selectivamente del documento la información solicitada sin devolver todo el texto completo.
     Especialmente útil para aislar fechas, tablas o nombres de personas/organizaciones de forma limpia.
     """
-    from src.herramientas_elite import extraer_selectivo_impl
+    from .herramientas_elite import extraer_selectivo_impl
     log.info("[TOOL] extract_selective: %s (%s)", document_path, extract_type)
     try:
         res = await extraer_selectivo_impl(document_path, extract_type, ctx=ctx)
@@ -771,7 +915,7 @@ async def detect_conflicts(
     Detecta discrepancias, inconsistencias conceptuales o discrepancias de datos (ej. montos discrepantes o
     fechas contradictorias para un mismo suceso) entre múltiples documentos.
     """
-    from src.herramientas_elite import detectar_conflictos_impl
+    from .herramientas_elite import detectar_conflictos_impl
     log.info("[TOOL] detect_conflicts: %d archivos", len(document_paths))
     try:
         res = await detectar_conflictos_impl(document_paths, ctx=ctx)
@@ -790,7 +934,7 @@ async def generate_summary(
     """
     Genera un resumen inteligente y adaptado al tipo solicitado en español para un documento largo.
     """
-    from src.herramientas_elite import generar_resumen_impl
+    from .herramientas_elite import generar_resumen_impl
     log.info("[TOOL] generate_summary: %s (%s)", document_path, summary_type)
     try:
         res = await generar_resumen_impl(document_path, summary_type, ctx=ctx)
@@ -809,7 +953,7 @@ async def create_checklist(
     Analiza un documento de directrices, requerimientos o contrato y genera una lista de verificación (checklist)
     de tareas e hitos estructurada en JSON.
     """
-    from src.herramientas_elite import crear_checklist_impl
+    from .herramientas_elite import crear_checklist_impl
     log.info("[TOOL] create_checklist: %s", document_path)
     try:
         res = await crear_checklist_impl(document_path, ctx=ctx)
@@ -827,7 +971,7 @@ async def extract_timeline(
     """
     Extrae todos los eventos con fecha de un documento de forma estructurada y los ordena cronológicamente.
     """
-    from src.herramientas_elite import extraer_cronograma_impl
+    from .herramientas_elite import extraer_cronograma_impl
     log.info("[TOOL] extract_timeline: %s", document_path)
     try:
         res = await extraer_cronograma_impl(document_path, ctx=ctx)
@@ -846,7 +990,7 @@ async def generate_rubric(
     Crea una tabla estructurada de rúbrica de evaluación con criterios, niveles de desempeño
     y ponderaciones basados en el texto provisto.
     """
-    from src.herramientas_elite import generar_rubrica_impl
+    from .herramientas_elite import generar_rubrica_impl
     log.info("[TOOL] generate_rubric: %s", document_path)
     try:
         res = await generar_rubrica_impl(document_path, ctx=ctx)
@@ -865,7 +1009,7 @@ async def smart_merge(
     Fusiona el contenido e información clave de múltiples documentos relacionados eliminando duplicidades
     y redactando un texto maestro consolidado en formato Markdown.
     """
-    from src.herramientas_elite import fusion_inteligente_impl
+    from .herramientas_elite import fusion_inteligente_impl
     log.info("[TOOL] smart_merge: %d archivos", len(document_paths))
     try:
         res = await fusion_inteligente_impl(document_paths, ctx=ctx)
@@ -884,7 +1028,7 @@ async def validate_structure(
     Valida la estructura formal del documento, reportando errores estructurales graves,
     advertencias menores y otorgando una calificación general del diseño del contenido de 0 a 100.
     """
-    from src.herramientas_elite import validar_estructura_impl
+    from .herramientas_elite import validar_estructura_impl
     log.info("[TOOL] validate_structure: %s", document_path)
     try:
         res = await validar_estructura_impl(document_path, ctx=ctx)
@@ -903,7 +1047,7 @@ async def ocr_quality_score(
     Evalúa la calidad del texto extraído en busca de artefactos de OCR corruptos,
     caracteres extraños o errores tipográficos sistemáticos del escaneo.
     """
-    from src.herramientas_elite import calidad_ocr_impl
+    from .herramientas_elite import calidad_ocr_impl
     log.info("[TOOL] ocr_quality_score: %s", document_path)
     try:
         res = await calidad_ocr_impl(document_path, ctx=ctx)
@@ -922,7 +1066,7 @@ async def cross_reference(
     Mapea referencias y relaciones implícitas o explícitas entre un conjunto de documentos.
     Identifica de qué forma se mencionan, citan o contradicen.
     """
-    from src.herramientas_elite import mapa_referencias_impl
+    from .herramientas_elite import mapa_referencias_impl
     log.info("[TOOL] cross_reference: %d archivos", len(document_paths))
     try:
         res = await mapa_referencias_impl(document_paths, ctx=ctx)
@@ -942,7 +1086,7 @@ async def completeness_check(
     Analiza si el documento contiene un listado específico de secciones requeridas,
     indicando cuáles faltan y cómo completarlas.
     """
-    from src.herramientas_elite import verificacion_completitud_impl
+    from .herramientas_elite import verificacion_completitud_impl
     log.info("[TOOL] completeness_check: %s", document_path)
     try:
         res = await verificacion_completitud_impl(document_path, expected_sections, ctx=ctx)
@@ -963,7 +1107,7 @@ async def batch_process(
     Procesa por lotes todos los documentos de una carpeta aplicando una acción específica
     y devolviendo un reporte consolidado.
     """
-    from src.herramientas_elite import procesar_lote_impl
+    from .herramientas_elite import procesar_lote_impl
     log.info("[TOOL] batch_process: %s (%s)", folder_path, action)
     try:
         res = await procesar_lote_impl(folder_path, action, extension_filter, ctx=ctx)
@@ -983,7 +1127,7 @@ async def version_tracking(
     Identifica de forma conceptual los cambios, adiciones, eliminaciones o reformulaciones
     entre dos versiones del mismo archivo.
     """
-    from src.herramientas_elite import seguimiento_versiones_impl
+    from .herramientas_elite import seguimiento_versiones_impl
     log.info("[TOOL] version_tracking: %s vs %s", document_path_1, document_path_2)
     try:
         res = await seguimiento_versiones_impl(document_path_1, document_path_2, ctx=ctx)
@@ -1001,7 +1145,7 @@ async def create_index(
     """
     Genera un índice temático y conceptual estructurado de temas clave discutidos en el documento.
     """
-    from src.herramientas_elite import crear_indice_impl
+    from .herramientas_elite import crear_indice_impl
     log.info("[TOOL] create_index: %s", document_path)
     try:
         res = await crear_indice_impl(document_path, ctx=ctx)
@@ -1020,7 +1164,7 @@ async def extract_relationships(
     Extrae un grafo relacional de personas, organizaciones, fechas, leyes y conceptos clave
     entrelazados en la documentación.
     """
-    from src.herramientas_elite import extraer_relaciones_impl
+    from .herramientas_elite import extraer_relaciones_impl
     log.info("[TOOL] extract_relationships: %d archivos", len(document_paths))
     try:
         res = await extraer_relaciones_impl(document_paths, ctx=ctx)
@@ -1039,7 +1183,7 @@ async def generate_qa_pairs(
     Genera de forma automática pares estructurados de Preguntas y Respuestas esperadas sobre el
     contenido del documento para facilitar entrenamiento o autoevaluación.
     """
-    from src.herramientas_elite import generar_preguntas_respuestas_impl
+    from .herramientas_elite import generar_preguntas_respuestas_impl
     log.info("[TOOL] generate_qa_pairs: %s", document_path)
     try:
         res = await generar_preguntas_respuestas_impl(document_path, ctx=ctx)
@@ -1058,7 +1202,7 @@ async def create_executive_brief(
     Consolida un informe ejecutivo analítico ultra-condensado de 1 página a partir de múltiples
     documentos o carpetas complejas.
     """
-    from src.herramientas_elite import briefing_ejecutivo_impl
+    from .herramientas_elite import briefing_ejecutivo_impl
     log.info("[TOOL] create_executive_brief: %d archivos", len(document_paths))
     try:
         res = await briefing_ejecutivo_impl(document_paths, ctx=ctx)
@@ -1076,10 +1220,10 @@ async def generate_action_items(
     """
     Extrae tareas accionables detalladas del documento con responsables implícitos y plazos inferidos.
     """
-    from src.herramientas_elite import generar_items_accion_impl
+    from .herramientas_elite import generar_items_accion_impl
     log.info("[TOOL] generate_action_items: %s", document_path)
     try:
-        res = await generar_items_accion_impl(document_path)
+        res = await generar_items_accion_impl(document_path, ctx=ctx)
         return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] generate_action_items: %s", exc, exc_info=True)
@@ -1087,32 +1231,212 @@ async def generate_action_items(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ENTRYPOINT
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TIER 1/2 EXCEL: CIRUGIA Y MANIPULACION QUIRURGICA DE HOJAS DE CALCULO
+# HERRAMIENTAS PPT-MASTER (HERMANO NATIVO DE PRESENTACIONES)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
+def pptx_inspect_slides(
+    pptx_path: Annotated[str, "Ruta absoluta al archivo .pptx a inspeccionar"],
+) -> str:
+    """
+    Inspecciona la totalidad de diapositivas de una presentacion PowerPoint:
+    devuelve cada forma, cuadro de texto, tabla, notas del orador y coordenadas
+    metricas en centimetros para permitir cirugias precisas.
+    """
+    log.info("[TOOL] pptx_inspect_slides: %s", pptx_path)
+    try:
+        cirujano = PptxSurgeon(pptx_path)
+        diapositivas = cirujano.inspeccionar_diapositivas()
+        resultado = {
+            "archivo": Path(pptx_path).name,
+            "total_diapositivas": len(diapositivas),
+            "diapositivas": diapositivas
+        }
+        return json.dumps(resultado, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] pptx_inspect_slides: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def pptx_surgical_replace(
+    pptx_path: Annotated[str, "Ruta al archivo .pptx"],
+    search_text: Annotated[str, "Texto exacto a buscar en formas o celdas de tabla"],
+    replace_text: Annotated[str, "Nuevo texto que reemplazara al objetivo"],
+    output_path: Annotated[str | None, "Ruta de salida opcional. Si se omite, sobrescribe el archivo"] = None,
+) -> str:
+    """
+    Reemplaza texto quirurgicamente dentro de cualquier forma o tabla de una presentacion,
+    preservando el formato de runs (fuente, tamano, color, negrita) sin corromper el XML.
+    """
+    log.info("[TOOL] pptx_surgical_replace: %s ('%s' -> '%s')", pptx_path, search_text, replace_text)
+    try:
+        cirujano = PptxSurgeon(pptx_path)
+        total = cirujano.reemplazo_quirurgico_texto(
+            texto_buscar=search_text,
+            texto_reemplazo=replace_text,
+            ruta_salida=output_path
+        )
+        return json.dumps({
+            "exito": total > 0,
+            "reemplazos_realizados": total,
+            "archivo_salida": output_path or pptx_path
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] pptx_surgical_replace: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def pptx_inject_image(
+    pptx_path: Annotated[str, "Ruta al archivo .pptx"],
+    slide_index: Annotated[int, "Indice de la diapositiva (base 1)"],
+    image_path: Annotated[str, "Ruta absoluta de la imagen a insertar"],
+    left_cm: Annotated[float, "Posicion horizontal en centimetros desde el borde izquierdo"],
+    top_cm: Annotated[float, "Posicion vertical en centimetros desde el borde superior"],
+    width_cm: Annotated[float | None, "Ancho en centimetros (opcional)"] = None,
+    height_cm: Annotated[float | None, "Alto en centimetros (opcional)"] = None,
+    output_path: Annotated[str | None, "Ruta de salida opcional"] = None,
+) -> str:
+    """
+    Inyecta una imagen o grafica con coordenadas metricas exactas en una diapositiva especifica.
+    """
+    log.info("[TOOL] pptx_inject_image: %s (slide=%d, img=%s)", pptx_path, slide_index, image_path)
+    try:
+        cirujano = PptxSurgeon(pptx_path)
+        exito = cirujano.inyectar_imagen_diapositiva(
+            indice_diapositiva=slide_index,
+            ruta_imagen=image_path,
+            izquierda_cm=left_cm,
+            arriba_cm=top_cm,
+            ancho_cm=width_cm,
+            alto_cm=height_cm,
+            ruta_salida=output_path
+        )
+        return json.dumps({
+            "exito": exito,
+            "diapositiva": slide_index,
+            "archivo_salida": output_path or pptx_path
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] pptx_inject_image: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def pptx_render_latex(
+    formula_latex: Annotated[str, "Expresion matematica en sintaxis LaTeX"],
+    output_png: Annotated[str, "Ruta del archivo PNG resultante"],
+    dpi: Annotated[int, "Resolucion en puntos por pulgada (default 300)"] = 300,
+    color_hex: Annotated[str, "Color hexadecimal de la fuente (default '000000')"] = "000000",
+    background_hex: Annotated[str, "Color hexadecimal de fondo (default 'FFFFFF')"] = "FFFFFF",
+    transparent: Annotated[bool, "Si es True, aplica transparencia alfa al fondo"] = True,
+) -> str:
+    """
+    Renderiza una ecuacion matematica en sintaxis LaTeX a una imagen PNG de alta definicion (300 DPI)
+    con fondo transparente mediante la cadena de proveedores de PPT-Master (CodeCogs, QuickLaTeX, MathPad).
+    """
+    log.info("[TOOL] pptx_render_latex: %s -> %s", formula_latex, output_png)
+    try:
+        resultado = PptxSurgeon.renderizar_formula_latex(
+            formula_latex=formula_latex,
+            ruta_salida_png=output_png,
+            dpi=dpi,
+            color_hex=color_hex,
+            fondo_hex=background_hex,
+            hacer_transparente=transparent
+        )
+        return json.dumps(resultado, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] pptx_render_latex: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def pptx_compile_from_svg(
+    svg_paths: Annotated[list[str], "Lista de rutas de diapositivas en formato SVG"],
+    output_pptx: Annotated[str, "Ruta de la presentacion .pptx a generar"],
+    canvas_format: Annotated[str, "Formato de lienzo (default 'ppt169')"] = "ppt169",
+    native_shapes: Annotated[bool, "Si es True, genera formas DrawingML editables nativas"] = True,
+    transition: Annotated[str, "Efecto de transicion de diapositiva (default 'fade')"] = "fade",
+) -> str:
+    """
+    Compila un conjunto de diapositivas disenadas en SVG a una presentacion PowerPoint editable
+    utilizando el compilador DrawingML de PPT-Master, garantizando nitidez vectorial a cualquier escala.
+    """
+    log.info("[TOOL] pptx_compile_from_svg: %d diapositivas -> %s", len(svg_paths), output_pptx)
+    try:
+        exito = PptxSurgeon.compilar_desde_svg(
+            archivos_svg=svg_paths,
+            ruta_salida_pptx=output_pptx,
+            formato_lienzo=canvas_format,
+            formas_nativas=native_shapes,
+            transicion=transition
+        )
+        return json.dumps({
+            "exito": exito,
+            "archivo_salida": output_pptx,
+            "total_diapositivas": len(svg_paths)
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] pptx_compile_from_svg: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def pptx_to_markdown(
+    pptx_path: Annotated[str, "Ruta al archivo .pptx"],
+    output_md: Annotated[str | None, "Ruta opcional para guardar el Markdown"] = None,
+) -> str:
+    """
+    Extrae el contenido completo de una presentacion PPTX a Markdown estructurado,
+    incluyendo titulos, texto por diapositiva, tablas y notas del orador.
+    """
+    log.info("[TOOL] pptx_to_markdown: %s", pptx_path)
+    try:
+        md = PptxSurgeon.extraer_a_markdown(pptx_path, ruta_salida_md=output_md)
+        return json.dumps({
+            "exito": True,
+            "archivo": pptx_path,
+            "archivo_salida": output_md,
+            "longitud_caracteres": len(md),
+            "markdown": md
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] pptx_to_markdown: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def pptx_to_svg(
+    pptx_path: Annotated[str, "Ruta al archivo .pptx"],
+    output_dir: Annotated[str, "Carpeta donde se guardaran los archivos SVG de cada diapositiva"],
+) -> str:
+    """
+    Convierte una presentacion PPTX en una coleccion de archivos SVG individuales
+    leyendo directamente el arbol OOXML sin requerir PowerPoint instalado.
+    """
+    log.info("[TOOL] pptx_to_svg: %s -> %s", pptx_path, output_dir)
+    try:
+        res = PptxSurgeon.convertir_a_svg(pptx_path, output_dir)
+        return json.dumps(res, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error("[TOOL ERROR] pptx_to_svg: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
 def inspect_excel_sheets(
-    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel (.xlsx / .xlsm) a inspeccionar"],
+    excel_path: Annotated[str, "Ruta absoluta al archivo .xlsx"],
 ) -> str:
     """
     Inspecciona la totalidad de hojas de un libro Excel:
-    nombre, visibilidad, dimensiones (ej. 'A1:F40'), total de filas y columnas con datos,
-    tablas estructuradas y rangos de celdas combinadas.
+    nombre, visibilidad, dimensiones, total de filas y columnas con datos, tablas y celdas combinadas.
     """
     log.info("[TOOL] inspect_excel_sheets: %s", excel_path)
     try:
-        from src.xlsx_surgeon import XlsxSurgeon
-        with XlsxSurgeon(excel_path, solo_lectura=False) as cirujano:
-            hojas = cirujano.inspeccionar_hojas()
-            return json.dumps({
-                "archivo": Path(excel_path).name,
-                "total_hojas": len(hojas),
-                "hojas": hojas,
-            }, ensure_ascii=False)
+        res = ExcelSurgeon.inspect_sheets(excel_path)
+        return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_excel_sheets: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1120,27 +1444,19 @@ def inspect_excel_sheets(
 
 @mcp.tool()
 def inspect_excel_cells(
-    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel (.xlsx / .xlsm)"],
-    sheet_name: Annotated[str | None, "Nombre de la hoja a inspeccionar. Si es None, usa la hoja activa"] = None,
-    cell_range: Annotated[str | None, "Rango de celdas especifico (ej. 'A1:D20' o 'B5'). Si es None, analiza las filas activas"] = None,
-    max_rows: Annotated[int, "Limite maximo de filas a inspeccionar (default 100)"] = 100,
+    excel_path: Annotated[str, "Ruta absoluta al archivo .xlsx"],
+    sheet_name: Annotated[str | None, "Nombre de la hoja a inspeccionar (opcional, por defecto activa)"] = None,
+    cell_range: Annotated[str | None, "Rango de celdas matricial (ej. 'A1:M60', opcional)"] = None,
+    max_rows: Annotated[int, "Numero maximo de filas a retornar"] = 100,
 ) -> str:
     """
     Inspecciona en profundidad un rango de celdas o filas de una hoja de calculo:
-    extrae valores, formulas, tipos de datos (texto, numero, fecha, etc.) y metadatos
-    de estilo (fuente, negrita, tamano, color, alineacion, relleno y formato numerico).
+    extrae valores, formulas, tipos de datos y metadatos de estilo.
     """
-    log.info("[TOOL] inspect_excel_cells: %s (hoja: %s, rango: %s, max_filas: %d)",
-             excel_path, sheet_name, cell_range, max_rows)
+    log.info("[TOOL] inspect_excel_cells: %s (hoja=%s, rango=%s)", excel_path, sheet_name, cell_range)
     try:
-        from src.xlsx_surgeon import XlsxSurgeon
-        with XlsxSurgeon(excel_path, solo_lectura=False) as cirujano:
-            resultado = cirujano.inspeccionar_celdas(
-                nombre_hoja=sheet_name,
-                rango_celdas=cell_range,
-                max_filas=max_rows,
-            )
-            return json.dumps(resultado, ensure_ascii=False)
+        res = ExcelSurgeon.inspect_cells(excel_path, sheet_name, cell_range, max_rows)
+        return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_excel_cells: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1148,33 +1464,21 @@ def inspect_excel_cells(
 
 @mcp.tool()
 def surgical_replace_excel_cell(
-    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel"],
-    coordinate: Annotated[str, "Coordenada de la celda a modificar (ej. 'B4' o 'F12')"],
-    new_value: Annotated[str, "Nuevo valor a inyectar (texto, numero o formula que inicie con '=')"],
-    sheet_name: Annotated[str | None, "Nombre de la hoja. Si es None, utiliza la hoja activa"] = None,
-    is_formula: Annotated[bool, "Indica explicitamente si el valor debe tratarse como formula"] = False,
-    output_path: Annotated[str | None, "Ruta de salida. Si es None, sobreescribe el archivo original"] = None,
+    excel_path: Annotated[str, "Ruta absoluta al archivo .xlsx"],
+    coordinate: Annotated[str, "Coordenada de la celda a reemplazar (ej. 'C14')"],
+    new_value: Annotated[str, "Nuevo valor a asignar"],
+    sheet_name: Annotated[str | None, "Nombre de la hoja (opcional, por defecto activa)"] = None,
+    is_formula: Annotated[bool, "Si es True, el nuevo valor se trata como formula matematica"] = False,
+    output_path: Annotated[str | None, "Ruta de salida (opcional, por defecto sobrescribe in-place)"] = None,
 ) -> str:
     """
     Modifica atomicamente una celda en una hoja de Excel garantizando el principio
-    de ZERO FORMAT LOSS: preserva intactas la fuente, bordes, rellenos, alineacion
-    y formato numerico original de la celda.
+    de ZERO FORMAT LOSS: preserva intactas la fuente, bordes, rellenos y alineacion original.
     """
-    log.info("[TOOL] surgical_replace_excel_cell: %s [%s!%s] -> '%s'",
-             excel_path, sheet_name or "activa", coordinate, new_value)
+    log.info("[TOOL] surgical_replace_excel_cell: %s en %s -> %s", excel_path, coordinate, new_value)
     try:
-        from src.xlsx_surgeon import XlsxSurgeon
-        with XlsxSurgeon(excel_path) as cirujano:
-            hoja_real = sheet_name or cirujano.libro.active.title
-            informe = cirujano.reemplazar_celda_quirurgica(
-                nombre_hoja=hoja_real,
-                coordenada=coordinate,
-                nuevo_valor=new_value,
-                es_formula=is_formula,
-            )
-            ruta_salida = cirujano.guardar(output_path)
-            informe["archivo_guardado"] = str(ruta_salida)
-            return json.dumps(informe, ensure_ascii=False)
+        res = ExcelSurgeon.surgical_replace_cell(excel_path, coordinate, new_value, sheet_name, is_formula, output_path)
+        return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_replace_excel_cell: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1182,37 +1486,25 @@ def surgical_replace_excel_cell(
 
 @mcp.tool()
 def surgical_inject_excel_table(
-    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel"],
-    start_cell: Annotated[str, "Celda inicial superior izquierda donde comenzara la tabla (ej. 'A1' o 'C5')"],
-    headers: Annotated[list[str], "Lista de nombres de encabezados de columna"],
+    excel_path: Annotated[str, "Ruta absoluta al archivo .xlsx"],
+    start_cell: Annotated[str, "Coordenada superior izquierda donde iniciara la tabla (ej. 'A1')"],
+    headers: Annotated[list[str], "Lista de encabezados de la tabla"],
     rows: Annotated[list[list[Any]], "Matriz de datos con las filas a inyectar"],
-    sheet_name: Annotated[str | None, "Nombre de la hoja. Si es None, utiliza la hoja activa"] = None,
-    table_name: Annotated[str | None, "Nombre formal de la tabla estructurada Excel (opcional)"] = None,
-    apply_aurora_style: Annotated[bool, "Si True, aplica tipografia Space Grotesk/Inter y diseno sobrio"] = False,
-    output_path: Annotated[str | None, "Ruta de salida. Si es None, sobreescribe el archivo original"] = None,
+    sheet_name: Annotated[str | None, "Nombre de la hoja (opcional, por defecto activa)"] = None,
+    table_name: Annotated[str | None, "Nombre descriptivo de la tabla (opcional)"] = None,
+    apply_aurora_style: Annotated[bool, "Si es True, aplica paleta de estilos sobrios del Aldraverso"] = False,
+    output_path: Annotated[str | None, "Ruta de salida (opcional, por defecto sobrescribe in-place)"] = None,
 ) -> str:
     """
     Inyecta una tabla o conjunto de datos estructurados en una hoja de calculo,
-    con autoajuste inteligente de anchos de columna y opcion de aplicar el sistema
-    de estilo sobrio del Aldraverso.
+    con autoajuste inteligente de anchos de columna y preservacion de formulas.
     """
-    log.info("[TOOL] surgical_inject_excel_table: %s [%s!%s] (%d cols, %d filas)",
-             excel_path, sheet_name or "activa", start_cell, len(headers), len(rows))
+    log.info("[TOOL] surgical_inject_excel_table: %s en %s (%d filas)", excel_path, start_cell, len(rows))
     try:
-        from src.xlsx_surgeon import XlsxSurgeon
-        with XlsxSurgeon(excel_path) as cirujano:
-            hoja_real = sheet_name or cirujano.libro.active.title
-            informe = cirujano.inyectar_tabla_quirurgica(
-                nombre_hoja=hoja_real,
-                celda_inicio=start_cell,
-                encabezados=headers,
-                filas=rows,
-                nombre_tabla=table_name,
-                aplicar_estilo_aurora=apply_aurora_style,
-            )
-            ruta_salida = cirujano.guardar(output_path)
-            informe["archivo_guardado"] = str(ruta_salida)
-            return json.dumps(informe, ensure_ascii=False)
+        res = ExcelSurgeon.surgical_inject_table(
+            excel_path, start_cell, headers, rows, sheet_name, table_name, apply_aurora_style, output_path
+        )
+        return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_inject_excel_table: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1220,41 +1512,34 @@ def surgical_inject_excel_table(
 
 @mcp.tool()
 def surgical_search_replace_excel(
-    excel_path: Annotated[str, "Ruta absoluta o relativa al archivo Excel"],
-    search_text: Annotated[str, "Texto que se desea buscar en las celdas"],
-    replace_text: Annotated[str, "Texto por el cual se reemplazara"],
-    sheet_name: Annotated[str | None, "Nombre de hoja especifica o None para buscar en todo el libro"] = None,
-    exact_match: Annotated[bool, "Si True, solo sustituye si la celda coincide exactamente con el texto"] = False,
-    output_path: Annotated[str | None, "Ruta de salida. Si es None, sobreescribe el archivo original"] = None,
+    excel_path: Annotated[str, "Ruta absoluta al archivo .xlsx"],
+    search_text: Annotated[str, "Texto o cadena a buscar"],
+    replace_text: Annotated[str, "Texto de reemplazo"],
+    sheet_name: Annotated[str | None, "Nombre de la hoja especifica (None = todas las hojas)"] = None,
+    exact_match: Annotated[bool, "Si es True, la celda debe coincidir exactamente con search_text"] = False,
+    output_path: Annotated[str | None, "Ruta de salida (opcional, por defecto sobrescribe in-place)"] = None,
 ) -> str:
     """
     Busca y reemplaza cadenas de texto en las celdas de una o todas las hojas del libro,
     conservando intactas las formulas, fuentes, colores, bordes y formatos numericos.
     """
-    log.info("[TOOL] surgical_search_replace_excel: %s buscando '%s' -> '%s'",
-             excel_path, search_text, replace_text)
+    log.info("[TOOL] surgical_search_replace_excel: %s ('%s' -> '%s')", excel_path, search_text, replace_text)
     try:
-        from src.xlsx_surgeon import XlsxSurgeon
-        with XlsxSurgeon(excel_path) as cirujano:
-            informe = cirujano.buscar_y_reemplazar(
-                texto_buscar=search_text,
-                texto_reemplazo=replace_text,
-                nombre_hoja=sheet_name,
-                coincidencia_exacta=exact_match,
-            )
-            ruta_salida = cirujano.guardar(output_path)
-            informe["archivo_guardado"] = str(ruta_salida)
-            return json.dumps(informe, ensure_ascii=False)
-    except Exception as exc:
-        log.error("[TOOL ERROR] surgical_search_replace_excel: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        res = ExcelSurgeon.surgical_search_replace(
+            excel_path, search_text, replace_text, sheet_name, exact_match, output_path
+        )
+        return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_search_replace_excel: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTRYPOINT
+# ─────────────────────────────────────────────────────────────────────────────
 
 def run() -> None:
-    log.info("Iniciando LUCERO (Décimo Hermano) MCP Server...")
+    log.info("Iniciando LUCERO (Decimo Hermano) MCP Server...")
     mcp.run()
 
 if __name__ == "__main__":

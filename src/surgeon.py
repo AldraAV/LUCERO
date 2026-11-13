@@ -236,7 +236,10 @@ class DocxSurgeon:
         coincidencias: list[dict[str, Any]] = []
 
         for p_idx, para in enumerate(body.iter(qn("w", "p"))):
-            runs = para.findall(f".//{qn('w', 'r')}")
+            runs = [
+                r for r in para.findall(f".//{qn('w', 'r')}")
+                if r.xpath("ancestor::w:p[1]", namespaces=NS)[0] is para
+            ]
             if not runs:
                 continue
 
@@ -1014,6 +1017,13 @@ class DocxSurgeon:
             pPr = etree.Element(qn("w", "pPr"))
             p_node.insert(0, pPr)
 
+        if "p_style" in props or "style" in props:
+            style_val = props.get("p_style") or props.get("style")
+            pStyle = pPr.find(qn("w", "pStyle"))
+            if pStyle is None:
+                pStyle = etree.SubElement(pPr, qn("w", "pStyle"))
+            pStyle.set(qn("w", "val"), str(style_val))
+
         if "align" in props:
             jc = pPr.find(qn("w", "jc"))
             if jc is None:
@@ -1028,6 +1038,24 @@ class DocxSurgeon:
                 ind.set(qn("w", "left"), str(props["indent_left"]))
             if "indent_hanging" in props:
                 ind.set(qn("w", "hanging"), str(props["indent_hanging"]))
+
+        if "indent_first_line" in props:
+            ind = pPr.find(qn("w", "ind"))
+            if ind is None:
+                ind = etree.SubElement(pPr, qn("w", "ind"))
+            ind.set(qn("w", "firstLine"), str(props["indent_first_line"]))
+
+        if any(k in props for k in ["line_spacing", "space_after", "space_before"]):
+            espaciado = pPr.find(qn("w", "spacing"))
+            if espaciado is None:
+                espaciado = etree.SubElement(pPr, qn("w", "spacing"))
+            if "line_spacing" in props:
+                espaciado.set(qn("w", "line"), str(props["line_spacing"]))
+                espaciado.set(qn("w", "lineRule"), "auto")
+            if "space_after" in props:
+                espaciado.set(qn("w", "after"), str(props["space_after"]))
+            if "space_before" in props:
+                espaciado.set(qn("w", "before"), str(props["space_before"]))
 
         self._apply_rPr(pPr, props)
 
@@ -1073,6 +1101,17 @@ class DocxSurgeon:
             i_el = rPr.find(qn("w", "i"))
             if i_el is not None:
                 rPr.remove(i_el)
+        if "highlight" in props:
+            hl_el = rPr.find(qn("w", "highlight"))
+            if hl_el is not None:
+                if props["highlight"] in (None, False, "none"):
+                    rPr.remove(hl_el)
+                else:
+                    hl_el.set(qn("w", "val"), str(props["highlight"]))
+            elif props["highlight"] not in (None, False, "none"):
+                hl_el = etree.SubElement(rPr, qn("w", "highlight"))
+                hl_el.set(qn("w", "val"), str(props["highlight"]))
+
 
     # ── Commit: reempaquetado seguro del ZIP ──────────────────────────────────
 

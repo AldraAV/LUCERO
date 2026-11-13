@@ -4,6 +4,18 @@
 
 ---
 
+## 🏛️ Sistema Normativo y Skill Oficial de LUCERO
+
+LUCERO integra de forma nativa en su repositorio las directrices de calidad editorial y su correspondiente skill para agentes inteligentes:
+
+- **Skill Oficial de LUCERO (Embebida en el Repo):** [`.agent/skills/lucero/SKILL.md`](file:///C:/Users/carde/Desktop/MUACK_2.0/LUCERO/.agent/skills/lucero/SKILL.md) / [`skills/lucero/SKILL.md`](file:///C:/Users/carde/Desktop/MUACK_2.0/LUCERO/skills/lucero/SKILL.md)
+- **Skill en Ecosistema Global:** [`MUACK_2.0/.agent/skills/lucero/SKILL.md`](file:///C:/Users/carde/Desktop/MUACK_2.0/.agent/skills/lucero/SKILL.md)
+- **Manual de Redacción Académica y Antipatrones de IA:** [`GUIA_REDACCION_ACADEMICA_Y_ANTIPATRONES_IA.md`](file:///C:/Users/carde/Desktop/MUACK_2.0/LUCERO/GUIA_REDACCION_ACADEMICA_Y_ANTIPATRONES_IA.md) (Erradicación de viñetas, AI-Puffery, ritmo monótono y redacción de prosa continua).
+- **Normas de Formato Estricto APA 7ma Edición:** [`APA_7_RULES.md`](file:///C:/Users/carde/Desktop/MUACK_2.0/LUCERO/APA_7_RULES.md) (Adaptación OOXML para márgenes, tablas abiertas de 3 líneas y tipografía).
+- **Protocolo de Resolución de Errores del Servidor:** [`RESOLUCION_ERRORES.md`](file:///C:/Users/carde/Desktop/MUACK_2.0/LUCERO/RESOLUCION_ERRORES.md).
+
+---
+
 ## ¿Por qué este servidor es superior?
 
 | Capacidad                 | Editores estándar              | **LUCERO**                                 |
@@ -31,17 +43,24 @@
 
 ``` markdown
 LUCERO/
+├── .agent/skills/lucero/   # Skill oficial para agentes (embebida en repo)
+│   ├── references/        # Referencias de redacción y antipatrones
+│   └── SKILL.md           # Guía maestra y reglas de oro de LUCERO
 ├── src/
 │   ├── __init__.py
-│   ├── server.py          # FastMCP server — 6 tools
+│   ├── server.py          # FastMCP server — tools activas
 │   ├── surgeon.py         # Motor quirúrgico: XPath + lxml
 │   ├── apa_templates.py   # Plantillas OOXML para APA 7ª
 │   └── utils.py           # Namespaces ECMA-376, logger, helpers
 ├── tests/
 │   ├── __init__.py
-│   └── test_surgeon.py    # Suite completa con DOCX real como fixture
+│   └── test_surgeon.py    # Suite de pruebas automatizadas
 ├── docs/
-│   └── ooxml_reference.md # Referencia rápida de namespaces y tags
+│   ├── ooxml_reference.md # Referencia rápida de namespaces y tags
+│   └── GUIA_REDACCION_ACADEMICA_Y_ANTIPATRONES_IA.md
+├── APA_7_RULES.md         # Normas de estilo y formato estricto APA 7ma
+├── GUIA_REDACCION_ACADEMICA_Y_ANTIPATRONES_IA.md # Manual anti-viñetas y calidad
+├── RESOLUCION_ERRORES.md  # Protocolo de mantenimiento y salud del servidor
 ├── pyproject.toml
 └── README.md
 ```

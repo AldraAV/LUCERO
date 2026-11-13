@@ -1,0 +1,1 @@
+{"name":"ocr_quality_score","description":"\n    Evalúa la calidad del texto extraído en busca de artefactos de OCR corruptos,\n    caracteres extraños o errores tipográficos sistemáticos del escaneo.\n    ","parameters":{"properties":{"document_path":{"title":"Document Path","type":"string"}},"required":["document_path"],"title":"ocr_quality_scoreArguments","type":"object"}}

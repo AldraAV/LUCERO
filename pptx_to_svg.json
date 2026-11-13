@@ -1,0 +1,1 @@
+{"name":"pptx_to_svg","description":"\n    Descompone una presentacion PPTX en archivos vectoriales SVG individuales usando PPT-Master.\n    ","parameters":{"properties":{"output_dir":{"title":"Output Dir","type":"string"},"pptx_path":{"title":"Pptx Path","type":"string"}},"required":["pptx_path","output_dir"],"title":"pptx_to_svgArguments","type":"object"}}

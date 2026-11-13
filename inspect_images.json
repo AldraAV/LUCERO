@@ -1,0 +1,1 @@
+{"name":"inspect_images","description":"\n    Escanea el documento y extrae todas las imágenes referenciadas en el XML.\n    Útil para encontrar el rId y el nombre físico de una imagen antes de reemplazarla.\n    ","parameters":{"properties":{"docx_path":{"title":"Docx Path","type":"string"}},"required":["docx_path"],"title":"inspect_imagesArguments","type":"object"}}

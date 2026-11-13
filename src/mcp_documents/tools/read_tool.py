@@ -29,6 +29,8 @@ class ReadTool(Tool):
                 content = await self._read_docx(file_path, extract_type)
             elif suffix == ".pdf":
                 content = await self._read_pdf(file_path, extract_type)
+            elif suffix == ".pptx":
+                content = await self._read_pptx(file_path, extract_type)
             elif suffix in [".md", ".txt"]:
                 async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
                     content = await f.read()
@@ -90,6 +92,35 @@ class ReadTool(Tool):
             return f"Title: {meta.get('/Title', 'N/A')}\nAuthor: {meta.get('/Author', 'N/A')}"
         else:
             return await self._read_pdf(file_path, "full_text")
+
+    async def _read_pptx(self, file_path: str, extract_type: str) -> str:
+        """Extrae el contenido de un archivo PPTX utilizando PptxSurgeon y python-pptx."""
+        from ...pptx_surgeon import PptxSurgeon
+        import json as _json
+        cirujano = PptxSurgeon(file_path)
+        if extract_type == "metadata" or extract_type == "all":
+            diapositivas = cirujano.inspeccionar_diapositivas()
+            return _json.dumps(diapositivas, ensure_ascii=False, indent=2)
+        try:
+            texto_md = PptxSurgeon.extraer_a_markdown(file_path)
+            if texto_md:
+                return texto_md
+        except Exception:
+            pass
+        diapositivas = cirujano.inspeccionar_diapositivas()
+        bloques: list[str] = []
+        for diap in diapositivas:
+            lineas = [f"=== Diapositiva {diap['indice']} ==="]
+            for forma in diap.get("formas", []):
+                if "texto_completo" in forma and forma["texto_completo"].strip():
+                    lineas.append(f"[{forma['nombre']}] ({forma['posicion']['izquierda_cm']}cm, {forma['posicion']['arriba_cm']}cm): {forma['texto_completo']}")
+                if "tabla" in forma:
+                    for fila in forma["tabla"]:
+                        lineas.append(" | ".join(fila))
+            if diap.get("notas_orador"):
+                lineas.append(f"Notas: {diap['notas_orador']}")
+            bloques.append("\n".join(lineas))
+        return "\n\n".join(bloques)
 
     def _mcp_schema(self):
         return {

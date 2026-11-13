@@ -1,0 +1,1 @@
+{"name":"pro_read_document","description":"Read any document and extract its content.","parameters":{"properties":{"extract_type":{"default":"full_text","title":"Extract Type","type":"string"},"file_path":{"title":"File Path","type":"string"}},"required":["file_path"],"title":"pro_read_documentArguments","type":"object"}}

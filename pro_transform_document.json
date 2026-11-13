@@ -1,0 +1,1 @@
+{"name":"pro_transform_document","description":"Convert between document formats (e.g., DOCX to PDF, DOCX to MD).","parameters":{"properties":{"source_path":{"title":"Source Path","type":"string"},"target_format":{"title":"Target Format","type":"string"}},"required":["source_path","target_format"],"title":"pro_transform_documentArguments","type":"object"}}

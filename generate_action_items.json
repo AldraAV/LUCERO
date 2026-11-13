@@ -1,0 +1,1 @@
+{"name":"generate_action_items","description":"\n    Extrae tareas accionables detalladas del documento con responsables implícitos y plazos inferidos.\n    ","parameters":{"properties":{"document_path":{"title":"Document Path","type":"string"}},"required":["document_path"],"title":"generate_action_itemsArguments","type":"object"}}
