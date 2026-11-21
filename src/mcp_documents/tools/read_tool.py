@@ -20,11 +20,39 @@ class ReadTool(Tool):
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         file_path = params.get("file_path")
         extract_type = params.get("extract_type", "full_text")
-        
+        start_line = params.get("start_line")
+        end_line = params.get("end_line")
+        search_query = params.get("search_query")
+        outline_only = bool(params.get("outline_only", False))
+        offset = int(params.get("offset", 0) or 0)
+        limit = int(params.get("limit", 8000) or 8000)
+
         try:
             path = Path(file_path)
             suffix = path.suffix.lower()
-            
+
+            if outline_only:
+                from ...navegador_documentos import obtener_esquema_documento
+
+                esquema = obtener_esquema_documento(file_path)
+                return {"success": True, "data": esquema}
+
+            if search_query:
+                from ...navegador_documentos import buscar_en_documento
+
+                busqueda = buscar_en_documento(file_path, consulta=search_query)
+                return {"success": True, "data": busqueda}
+
+            if start_line is not None or end_line is not None:
+                from ...navegador_documentos import leer_rango_documento
+
+                rango = leer_rango_documento(
+                    file_path,
+                    linea_inicio=int(start_line) if start_line is not None else None,
+                    linea_fin=int(end_line) if end_line is not None else None,
+                )
+                return {"success": True, "data": rango}
+
             if suffix == ".docx":
                 content = await self._read_docx(file_path, extract_type)
             elif suffix == ".pdf":
@@ -39,7 +67,25 @@ class ReadTool(Tool):
                     "success": False,
                     "error": f"Unsupported format: {suffix}"
                 }
-            
+
+            total_chars = len(content)
+            if offset > 0 or total_chars > limit:
+                content_slice = content[offset : offset + limit]
+                hay_mas = (offset + limit) < total_chars
+                return {
+                    "success": True,
+                    "data": {
+                        "format": suffix,
+                        "path": str(path),
+                        "content": content_slice,
+                        "offset": offset,
+                        "limit": limit,
+                        "total_chars": total_chars,
+                        "has_more": hay_mas,
+                        "next_offset": (offset + limit) if hay_mas else None,
+                    }
+                }
+
             return {
                 "success": True,
                 "data": {

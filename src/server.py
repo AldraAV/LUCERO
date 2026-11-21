@@ -38,6 +38,17 @@ from .apa_templates import (
 from .surgeon import DocxSurgeon
 from .pptx_surgeon import PptxSurgeon
 from .excel_surgeon import ExcelSurgeon
+from .optimizador_tokens import (
+    generar_diff_compacto,
+    paginar_lista,
+    serializar_respuesta_compacta,
+    serializar_toon,
+)
+from .navegador_documentos import (
+    buscar_en_documento,
+    leer_rango_documento,
+    obtener_esquema_documento,
+)
 from .utils import JsonDict, get_logger
 
 log = get_logger("lucero.server")
@@ -63,40 +74,53 @@ mcp = FastMCP(
 
 @mcp.tool()
 def inspect_xml_tree(
-    docx_path: Annotated[str, "Ruta absoluta al archivo .docx a inspeccionar"],
-    max_paragraphs: Annotated[int, "Máximo de párrafos a devolver (default 100)"] = 100,
-    style_filter: Annotated[str | None, "Filtrar por ID de estilo (ej. 'Heading1', 'ParrafoAPA')"] = None,
+    docx_path: Annotated[str, "Ruta absoluta al archivo .docx"],
+    max_paragraphs: Annotated[int, "Maximo de parrafos a devolver (default 100)"] = 100,
+    style_filter: Annotated[str | None, "Filtrar por ID de estilo (ej. 'Heading1')"] = None,
+    offset: Annotated[int, "Indice de parrafo inicial para paginacion (default 0)"] = 0,
+    lightweight: Annotated[bool, "Si es True, omite runs y XPath para ahorrar tokens"] = False,
 ) -> str:
-    """
-    Devuelve el mapa estructural completo del documento:
-    cada párrafo con su paraId, estilo, texto completo y los runs individuales
-    con su formato (bold, italic, underline, strike) y XPath exacto.
-
-    Esto permite que el LLM 'vea' la estructura oculta antes de operar.
-    """
-    log.info("[TOOL] inspect_xml_tree: %s (max=%d, filter=%s)",
-             docx_path, max_paragraphs, style_filter)
+    """Devuelve mapa estructural del .docx (paraId, estilo, texto y opcionalmente runs/XPath)."""
+    log.info("[TOOL] inspect_xml_tree: %s (max=%d, offset=%d, filter=%s, light=%s)",
+             docx_path, max_paragraphs, offset, style_filter, lightweight)
     try:
         surgeon = DocxSurgeon(docx_path)
-        data = surgeon.inspect_tree(max_paragraphs=max_paragraphs)
+        data = surgeon.inspect_tree(max_paragraphs=offset + max_paragraphs)
 
         if style_filter:
             data = [p for p in data if p.get("style") == style_filter]
-            log.info("Filtrado por estilo '%s': %d párrafos", style_filter, len(data))
+
+        paginado = paginar_lista(data, inicio=offset, limite=max_paragraphs)
+        parrafos_salida = paginado["elementos"]
+        if lightweight:
+            parrafos_salida = [
+                {
+                    "index": p.get("index"),
+                    "paraId": p.get("paraId"),
+                    "style": p.get("style"),
+                    "text": p.get("text"),
+                }
+                for p in parrafos_salida
+            ]
 
         styles = surgeon.get_styles_list()
-
         result = {
             "file": Path(docx_path).name,
-            "total_paragraphs_scanned": len(data),
+            "total_paragraphs_scanned": paginado["mostrados"],
+            "offset": offset,
+            "hay_mas": paginado["hay_mas"],
+            "siguiente_offset": paginado.get("siguiente_inicio"),
             "styles_used": styles,
-            "paragraphs": data,
+            "paragraphs": parrafos_salida,
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return serializar_toon(
+            result,
+            nota_paginacion=f"Usa offset={offset + max_paragraphs} o lightweight=True en inspect_xml_tree.",
+        )
 
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_xml_tree: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,22 +130,13 @@ def inspect_xml_tree(
 @mcp.tool()
 def surgical_replace(
     docx_path: Annotated[str, "Ruta al .docx a operar"],
-    target_text: Annotated[str, "Texto exacto a localizar en los nodos <w:t>"],
-    replacement_text: Annotated[str, "Texto de reemplazo (el formato del run se preserva)"],
-    output_path: Annotated[str | None, "Ruta de salida. Si es None sobreescribe el original"] = None,
-    occurrence: Annotated[int, "Qué aparición reemplazar: 1=primera, -1=todas"] = 1,
+    target_text: Annotated[str, "Texto exacto a localizar en nodos <w:t>"],
+    replacement_text: Annotated[str, "Texto de reemplazo (preserva formato)"],
+    output_path: Annotated[str | None, "Ruta de salida; None sobrescribe original"] = None,
+    occurrence: Annotated[int, "Aparicion a reemplazar: 1=primera, -1=todas"] = 1,
 ) -> str:
-    """
-    Localiza 'target_text' en el XML interno mediante XPath y reemplaza
-    SOLO el contenido del nodo <w:t>, dejando intactas las etiquetas de
-    formato <w:rPr> que lo rodean (negrita, color, tamaño, etc.).
-
-    Maneja automáticamente texto fragmentado entre múltiples runs consecutivos
-    (comportamiento habitual del autocorrector de Word).
-
-    Al terminar, hace commit automático del DOCX.
-    """
-    log.info("[TOOL] surgical_replace: %r → %r en %s",
+    """Reemplaza texto en nodos <w:t> preservando el formato <w:rPr> y hace commit automatico."""
+    log.info("[TOOL] surgical_replace: %r -> %r en %s",
              target_text, replacement_text, docx_path)
     try:
         surgeon = DocxSurgeon(docx_path)
@@ -132,23 +147,29 @@ def surgical_replace(
         )
 
         if replace_result["occurrences_replaced"] == 0:
-            return json.dumps({
+            return serializar_respuesta_compacta({
                 "success": False,
-                "reason": f"No se encontró '{target_text}' en el documento.",
+                "reason": f"No se encontro '{target_text}' en el documento.",
                 "detail": replace_result,
-            }, ensure_ascii=False, indent=2)
+            })
 
         commit_result = surgeon.commit_changes(output_path)
+        diff_compacto = generar_diff_compacto(
+            target_text,
+            replacement_text,
+            etiqueta=Path(docx_path).name,
+        )
 
-        return json.dumps({
-            "success":      True,
-            "replace":      replace_result,
-            "commit":       commit_result,
-        }, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta({
+            "success": True,
+            "replace": replace_result,
+            "commit": commit_result,
+            "diff": diff_compacto,
+        })
 
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_replace: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,7 +242,7 @@ def inject_apa_structure(
         )
 
         if not inject_result.get("success"):
-            return json.dumps(inject_result, ensure_ascii=False, indent=2)
+            return serializar_respuesta_compacta(inject_result)
 
         commit_result = surgeon.commit_changes(output_path)
 
@@ -234,7 +255,7 @@ def inject_apa_structure(
 
     except Exception as exc:
         log.error("[TOOL ERROR] inject_apa_structure: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,10 +284,10 @@ def commit_changes(
         # (útil cuando el XML fue modificado externamente)
         surgeon._dirty = True
         result = surgeon.commit_changes(output_path)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(result)
     except Exception as exc:
         log.error("[TOOL ERROR] commit_changes: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,7 +318,7 @@ def insertar_parrafo_clonado(
             aparicion=aparicion,
         )
         if not inject_res.get("success"):
-            return json.dumps(inject_res, ensure_ascii=False, indent=2)
+            return serializar_respuesta_compacta(inject_res)
 
         commit_res = surgeon.commit_changes(output_path)
         return json.dumps({
@@ -307,7 +328,7 @@ def insertar_parrafo_clonado(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] insertar_parrafo_clonado: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,7 +382,7 @@ def lote_quirurgico(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] lote_quirurgico: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -400,7 +421,7 @@ def ensamblar_documento_maestro(
             identificador_cuerpo_origen=identificador_cuerpo,
         )
         if not res_ensamblado.get("success"):
-            return json.dumps(res_ensamblado, ensure_ascii=False, indent=2)
+            return serializar_respuesta_compacta(res_ensamblado)
 
         commit_res = surgeon.commit_changes(output_path)
         return json.dumps({
@@ -410,7 +431,7 @@ def ensamblar_documento_maestro(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] ensamblar_documento_maestro: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -430,10 +451,10 @@ def exportar_a_markdown(
     try:
         surgeon = DocxSurgeon(docx_path)
         res = surgeon.exportar_a_markdown(output_path)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] exportar_a_markdown: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -453,7 +474,7 @@ def list_apa_templates() -> str:
         }
         for k, v in TEMPLATE_CATALOG.items()
     }
-    return json.dumps(catalog_out, ensure_ascii=False, indent=2)
+    return serializar_respuesta_compacta(catalog_out)
 
 
 _EXTRA_PARAMS: dict[str, dict] = {
@@ -499,16 +520,16 @@ def run_xpath(
                 "attrs": attrs,
             })
 
-        return json.dumps({
+        return serializar_toon({
             "xpath":        xpath_expr,
             "total_found":  len(nodes),
             "shown":        len(results),
             "results":      results,
-        }, ensure_ascii=False, indent=2)
+        })
 
     except Exception as exc:
         log.error("[TOOL ERROR] run_xpath: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -558,7 +579,66 @@ def surgical_style_edit(
 
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_style_edit: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
+
+
+@mcp.tool()
+def edit_section_layout(
+    file_path: Annotated[str, "Ruta al .docx"],
+    margins_twips: Annotated[dict[str, int] | None, "Margenes {top, bottom, left, right} en twips"] = None,
+    page_size_twips: Annotated[dict[str, int] | None, "Tamano {w, h} en twips"] = None,
+    enforce_apa_page_number: Annotated[bool, "Inyecta numeracion APA en esquina superior derecha"] = False,
+) -> str:
+    """Ajusta margenes, tamano de hoja y numeracion APA en secciones (//w:sectPr) y encabezados."""
+    log.info("[TOOL] edit_section_layout: %s", file_path)
+    try:
+        surgeon = DocxSurgeon(file_path)
+        res = surgeon.edit_section_layout(
+            margins_twips=margins_twips,
+            page_size_twips=page_size_twips,
+            enforce_apa_page_number=enforce_apa_page_number,
+        )
+        if res["secciones_modificadas"] > 0 or res["encabezados_modificados"] > 0:
+            surgeon.commit_changes()
+        return (
+            f"OK: {res['secciones_modificadas']} secciones y "
+            f"{res['encabezados_modificados']} encabezados actualizados"
+        )
+    except Exception as exc:
+        log.error("[TOOL ERROR] edit_section_layout: %s", exc, exc_info=True)
+        return serializar_respuesta_compacta({"error": str(exc)})
+
+
+@mcp.tool()
+def batch_normalize_styles(
+    file_path: Annotated[str, "Ruta al .docx"],
+    target_xpath: Annotated[str | None, "XPath de nodos w:p o w:r en document.xml"] = None,
+    update_doc_defaults: Annotated[bool, "Actualiza docDefaults y Normal en word/styles.xml"] = False,
+    set_font: Annotated[str | None, "Fuente (ej. 'Times New Roman')"] = None,
+    set_size_half_pts: Annotated[int | None, "Tamano en medios puntos (ej. 24 = 12pt)"] = None,
+    set_align: Annotated[str | None, "Alineacion: left, center, right, both"] = None,
+    set_line_spacing: Annotated[int | None, "Interlineado en 240avos (ej. 480 = doble)"] = None,
+    set_space_after: Annotated[int | None, "Espacio posterior en twips (ej. 0)"] = None,
+) -> str:
+    """Normaliza estilos globales en styles.xml y/o nodos XPath en document.xml en una llamada."""
+    log.info("[TOOL] batch_normalize_styles: %s", file_path)
+    try:
+        surgeon = DocxSurgeon(file_path)
+        res = surgeon.batch_normalize_styles(
+            target_xpath=target_xpath,
+            update_doc_defaults=update_doc_defaults,
+            set_font=set_font,
+            set_size_half_pts=set_size_half_pts,
+            set_align=set_align,
+            set_line_spacing=set_line_spacing,
+            set_space_after=set_space_after,
+        )
+        if res["nodos_actualizados"] > 0:
+            surgeon.commit_changes()
+        return f"OK: {res['nodos_actualizados']} nodos actualizados"
+    except Exception as exc:
+        log.error("[TOOL ERROR] batch_normalize_styles: %s", exc, exc_info=True)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -584,7 +664,7 @@ def inspect_images(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_images: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOOL 9: surgical_replace_image  (Opción A)
@@ -605,7 +685,7 @@ def surgical_replace_image(
         replace_result = surgeon.surgical_replace_image(r_id, new_image_path, zip_target=zip_target)
         
         if not replace_result.get("success", False):
-            return json.dumps(replace_result, ensure_ascii=False, indent=2)
+            return serializar_respuesta_compacta(replace_result)
             
         commit_result = surgeon.commit_changes(output_path)
         return json.dumps({
@@ -615,7 +695,7 @@ def surgical_replace_image(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_replace_image: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOOL 10: surgical_inject_image  (Opción B)
@@ -635,7 +715,7 @@ def surgical_inject_image(
         inject_result = surgeon.surgical_inject_image(xpath_expr, new_image_path)
         
         if not inject_result.get("success", False):
-            return json.dumps(inject_result, ensure_ascii=False, indent=2)
+            return serializar_respuesta_compacta(inject_result)
             
         commit_result = surgeon.commit_changes(output_path)
         return json.dumps({
@@ -645,7 +725,7 @@ def surgical_inject_image(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_inject_image: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -797,7 +877,7 @@ def inject_toc(
 
     except Exception as exc:
         log.error("[TOOL ERROR] inject_toc: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 from .mcp_documents.core.executor import ToolExecutor
@@ -811,12 +891,70 @@ lucero_executor = ToolExecutor()
 
 @mcp.tool()
 async def pro_read_document(
-    file_path: Annotated[str, "Path to document file (DOCX, PDF, MD, TXT)"],
-    extract_type: Annotated[str, "Extraction type: full_text, metadata, tables, all"] = "full_text"
+    file_path: Annotated[str, "Ruta al documento (DOCX, PDF, PPTX, TXT)"],
+    extract_type: Annotated[str, "Tipo: full_text, metadata, tables, all"] = "full_text",
+    start_line: Annotated[int | None, "Linea inicial base 1 (opcional)"] = None,
+    end_line: Annotated[int | None, "Linea final inclusiva (opcional)"] = None,
+    search_query: Annotated[str | None, "Texto a buscar con contexto acotado (opcional)"] = None,
+    outline_only: Annotated[bool, "Si es True, devuelve solo indice estructural ligero"] = False,
+    offset: Annotated[int, "Desplazamiento inicial en caracteres para paginacion"] = 0,
+    limit: Annotated[int, "Maximo de caracteres por pagina (default 8000)"] = 8000,
 ) -> str:
-    """Read any document and extract its content."""
-    res = await lucero_executor.execute("mcp", "read_document", {"file_path": file_path, "extract_type": extract_type})
-    return json.dumps(res, ensure_ascii=False, indent=2)
+    """Lee un documento completo, por rango de lineas numeradas, por busqueda acotada o solo su indice."""
+    res = await lucero_executor.execute(
+        "mcp",
+        "read_document",
+        {
+            "file_path": file_path,
+            "extract_type": extract_type,
+            "start_line": start_line,
+            "end_line": end_line,
+            "search_query": search_query,
+            "outline_only": outline_only,
+            "offset": offset,
+            "limit": limit,
+        },
+    )
+    return serializar_respuesta_compacta(
+        res,
+        limite=max(500, limit),
+        nota_paginacion=f"Usa offset={offset + limit} o start_line/end_line en pro_read_document.",
+    )
+
+
+@mcp.tool()
+def get_document_outline(
+    file_path: Annotated[str, "Ruta absoluta al archivo (DOCX, PPTX, XLSX, PDF, TXT)"],
+    max_items: Annotated[int, "Maximo de elementos estructurales a devolver"] = 100,
+) -> str:
+    """Devuelve un indice ligero (encabezados, diapositivas, hojas o paginas) con su linea o indice."""
+    try:
+        esquema = obtener_esquema_documento(file_path, max_elementos=max_items)
+        return serializar_toon(esquema)
+    except Exception as exc:
+        log.error("[TOOL ERROR] get_document_outline: %s", exc, exc_info=True)
+        return serializar_respuesta_compacta({"error": str(exc)})
+
+
+@mcp.tool()
+def search_in_doc(
+    file_path: Annotated[str, "Ruta absoluta al archivo (DOCX, PPTX, XLSX, PDF, TXT)"],
+    query: Annotated[str, "Texto a buscar dentro del documento"],
+    context_lines: Annotated[int, "Lineas de margen superior e inferior por coincidencia"] = 2,
+    max_matches: Annotated[int, "Maximo de coincidencias a devolver"] = 20,
+) -> str:
+    """Busca texto en un documento y devuelve coincidencias numeradas con contexto acotado."""
+    try:
+        res = buscar_en_documento(
+            file_path,
+            consulta=query,
+            lineas_contexto=context_lines,
+            max_coincidencias=max_matches,
+        )
+        return serializar_respuesta_compacta(res)
+    except Exception as exc:
+        log.error("[TOOL ERROR] search_in_doc: %s", exc, exc_info=True)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 @mcp.tool()
 async def pro_write_document(
@@ -837,7 +975,7 @@ async def pro_write_document(
         "password": password
     }
     res = await lucero_executor.execute("mcp", "write_document", params)
-    return json.dumps(res, ensure_ascii=False, indent=2)
+    return serializar_respuesta_compacta(res)
 
 @mcp.tool()
 async def pro_transform_document(
@@ -851,7 +989,7 @@ async def pro_transform_document(
         "target_format": target_format,
         "output_path": output_path
     })
-    return json.dumps(res, ensure_ascii=False, indent=2)
+    return serializar_respuesta_compacta(res)
 
 @mcp.tool()
 async def pro_encrypt_document(
@@ -861,7 +999,7 @@ async def pro_encrypt_document(
 ) -> str:
     """Encrypt documents with AES-256 and PBKDF2."""
     res = await lucero_executor.execute("mcp", "encrypt_document", {"file_path": file_path, "password": password, "output_path": output_path})
-    return json.dumps(res, ensure_ascii=False, indent=2)
+    return serializar_respuesta_compacta(res)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HERRAMIENTAS DE NIVEL ÉLITE (TIERS 1-5)
@@ -880,10 +1018,10 @@ async def compare_documents(
     log.info("[TOOL] compare_documents: %d archivos", len(document_paths))
     try:
         res = await comparar_documentos_impl(document_paths, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] compare_documents: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -900,10 +1038,10 @@ async def extract_selective(
     log.info("[TOOL] extract_selective: %s (%s)", document_path, extract_type)
     try:
         res = await extraer_selectivo_impl(document_path, extract_type, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] extract_selective: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -919,10 +1057,10 @@ async def detect_conflicts(
     log.info("[TOOL] detect_conflicts: %d archivos", len(document_paths))
     try:
         res = await detectar_conflictos_impl(document_paths, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] detect_conflicts: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -938,10 +1076,10 @@ async def generate_summary(
     log.info("[TOOL] generate_summary: %s (%s)", document_path, summary_type)
     try:
         res = await generar_resumen_impl(document_path, summary_type, ctx=ctx)
-        return json.dumps({"resumen": res}, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta({"resumen": res})
     except Exception as exc:
         log.error("[TOOL ERROR] generate_summary: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -957,10 +1095,10 @@ async def create_checklist(
     log.info("[TOOL] create_checklist: %s", document_path)
     try:
         res = await crear_checklist_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] create_checklist: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -975,10 +1113,10 @@ async def extract_timeline(
     log.info("[TOOL] extract_timeline: %s", document_path)
     try:
         res = await extraer_cronograma_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] extract_timeline: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -994,10 +1132,10 @@ async def generate_rubric(
     log.info("[TOOL] generate_rubric: %s", document_path)
     try:
         res = await generar_rubrica_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] generate_rubric: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1013,10 +1151,10 @@ async def smart_merge(
     log.info("[TOOL] smart_merge: %d archivos", len(document_paths))
     try:
         res = await fusion_inteligente_impl(document_paths, ctx=ctx)
-        return json.dumps({"merged_content": res}, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta({"merged_content": res})
     except Exception as exc:
         log.error("[TOOL ERROR] smart_merge: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1032,10 +1170,10 @@ async def validate_structure(
     log.info("[TOOL] validate_structure: %s", document_path)
     try:
         res = await validar_estructura_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] validate_structure: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1051,10 +1189,10 @@ async def ocr_quality_score(
     log.info("[TOOL] ocr_quality_score: %s", document_path)
     try:
         res = await calidad_ocr_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] ocr_quality_score: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1070,10 +1208,10 @@ async def cross_reference(
     log.info("[TOOL] cross_reference: %d archivos", len(document_paths))
     try:
         res = await mapa_referencias_impl(document_paths, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] cross_reference: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1090,10 +1228,10 @@ async def completeness_check(
     log.info("[TOOL] completeness_check: %s", document_path)
     try:
         res = await verificacion_completitud_impl(document_path, expected_sections, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] completeness_check: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1111,10 +1249,10 @@ async def batch_process(
     log.info("[TOOL] batch_process: %s (%s)", folder_path, action)
     try:
         res = await procesar_lote_impl(folder_path, action, extension_filter, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] batch_process: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1131,10 +1269,10 @@ async def version_tracking(
     log.info("[TOOL] version_tracking: %s vs %s", document_path_1, document_path_2)
     try:
         res = await seguimiento_versiones_impl(document_path_1, document_path_2, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] version_tracking: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1149,10 +1287,10 @@ async def create_index(
     log.info("[TOOL] create_index: %s", document_path)
     try:
         res = await crear_indice_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] create_index: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1168,10 +1306,10 @@ async def extract_relationships(
     log.info("[TOOL] extract_relationships: %d archivos", len(document_paths))
     try:
         res = await extraer_relaciones_impl(document_paths, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] extract_relationships: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1187,10 +1325,10 @@ async def generate_qa_pairs(
     log.info("[TOOL] generate_qa_pairs: %s", document_path)
     try:
         res = await generar_preguntas_respuestas_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] generate_qa_pairs: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1206,10 +1344,10 @@ async def create_executive_brief(
     log.info("[TOOL] create_executive_brief: %d archivos", len(document_paths))
     try:
         res = await briefing_ejecutivo_impl(document_paths, ctx=ctx)
-        return json.dumps({"briefing": res}, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta({"briefing": res})
     except Exception as exc:
         log.error("[TOOL ERROR] create_executive_brief: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1224,10 +1362,10 @@ async def generate_action_items(
     log.info("[TOOL] generate_action_items: %s", document_path)
     try:
         res = await generar_items_accion_impl(document_path, ctx=ctx)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] generate_action_items: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1237,25 +1375,30 @@ async def generate_action_items(
 @mcp.tool()
 def pptx_inspect_slides(
     pptx_path: Annotated[str, "Ruta absoluta al archivo .pptx a inspeccionar"],
+    offset: Annotated[int, "Indice de diapositiva inicial (base 0) para paginacion"] = 0,
+    limit: Annotated[int, "Maximo de diapositivas a devolver por llamada"] = 20,
 ) -> str:
-    """
-    Inspecciona la totalidad de diapositivas de una presentacion PowerPoint:
-    devuelve cada forma, cuadro de texto, tabla, notas del orador y coordenadas
-    metricas en centimetros para permitir cirugias precisas.
-    """
-    log.info("[TOOL] pptx_inspect_slides: %s", pptx_path)
+    """Inspecciona diapositivas de un .pptx devolviendo formas, tablas, notas y coordenadas en cm."""
+    log.info("[TOOL] pptx_inspect_slides: %s (offset=%d, limit=%d)", pptx_path, offset, limit)
     try:
         cirujano = PptxSurgeon(pptx_path)
         diapositivas = cirujano.inspeccionar_diapositivas()
+        paginado = paginar_lista(diapositivas, inicio=offset, limite=limit)
         resultado = {
             "archivo": Path(pptx_path).name,
-            "total_diapositivas": len(diapositivas),
-            "diapositivas": diapositivas
+            "total_diapositivas": paginado["total"],
+            "offset": offset,
+            "hay_mas": paginado["hay_mas"],
+            "siguiente_offset": paginado.get("siguiente_inicio"),
+            "diapositivas": paginado["elementos"],
         }
-        return json.dumps(resultado, ensure_ascii=False, indent=2)
+        return serializar_toon(
+            resultado,
+            nota_paginacion=f"Usa offset={offset + limit} en pptx_inspect_slides para ver mas diapositivas.",
+        )
     except Exception as exc:
         log.error("[TOOL ERROR] pptx_inspect_slides: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1265,10 +1408,7 @@ def pptx_surgical_replace(
     replace_text: Annotated[str, "Nuevo texto que reemplazara al objetivo"],
     output_path: Annotated[str | None, "Ruta de salida opcional. Si se omite, sobrescribe el archivo"] = None,
 ) -> str:
-    """
-    Reemplaza texto quirurgicamente dentro de cualquier forma o tabla de una presentacion,
-    preservando el formato de runs (fuente, tamano, color, negrita) sin corromper el XML.
-    """
+    """Reemplaza texto en formas o tablas de un .pptx preservando el formato de runs."""
     log.info("[TOOL] pptx_surgical_replace: %s ('%s' -> '%s')", pptx_path, search_text, replace_text)
     try:
         cirujano = PptxSurgeon(pptx_path)
@@ -1277,14 +1417,20 @@ def pptx_surgical_replace(
             texto_reemplazo=replace_text,
             ruta_salida=output_path
         )
-        return json.dumps({
+        diff_compacto = generar_diff_compacto(
+            search_text,
+            replace_text,
+            etiqueta=Path(pptx_path).name,
+        ) if total > 0 else ""
+        return serializar_respuesta_compacta({
             "exito": total > 0,
             "reemplazos_realizados": total,
-            "archivo_salida": output_path or pptx_path
-        }, ensure_ascii=False, indent=2)
+            "archivo_salida": output_path or pptx_path,
+            "diff": diff_compacto,
+        })
     except Exception as exc:
         log.error("[TOOL ERROR] pptx_surgical_replace: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1320,7 +1466,7 @@ def pptx_inject_image(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] pptx_inject_image: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1346,10 +1492,10 @@ def pptx_render_latex(
             fondo_hex=background_hex,
             hacer_transparente=transparent
         )
-        return json.dumps(resultado, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(resultado)
     except Exception as exc:
         log.error("[TOOL ERROR] pptx_render_latex: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1380,7 +1526,7 @@ def pptx_compile_from_svg(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] pptx_compile_from_svg: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1404,7 +1550,7 @@ def pptx_to_markdown(
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         log.error("[TOOL ERROR] pptx_to_markdown: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1419,10 +1565,10 @@ def pptx_to_svg(
     log.info("[TOOL] pptx_to_svg: %s -> %s", pptx_path, output_dir)
     try:
         res = PptxSurgeon.convertir_a_svg(pptx_path, output_dir)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] pptx_to_svg: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1436,10 +1582,10 @@ def inspect_excel_sheets(
     log.info("[TOOL] inspect_excel_sheets: %s", excel_path)
     try:
         res = ExcelSurgeon.inspect_sheets(excel_path)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_toon(res)
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_excel_sheets: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1456,10 +1602,10 @@ def inspect_excel_cells(
     log.info("[TOOL] inspect_excel_cells: %s (hoja=%s, rango=%s)", excel_path, sheet_name, cell_range)
     try:
         res = ExcelSurgeon.inspect_cells(excel_path, sheet_name, cell_range, max_rows)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_toon(res)
     except Exception as exc:
         log.error("[TOOL ERROR] inspect_excel_cells: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1478,10 +1624,10 @@ def surgical_replace_excel_cell(
     log.info("[TOOL] surgical_replace_excel_cell: %s en %s -> %s", excel_path, coordinate, new_value)
     try:
         res = ExcelSurgeon.surgical_replace_cell(excel_path, coordinate, new_value, sheet_name, is_formula, output_path)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_replace_excel_cell: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1504,10 +1650,10 @@ def surgical_inject_excel_table(
         res = ExcelSurgeon.surgical_inject_table(
             excel_path, start_cell, headers, rows, sheet_name, table_name, apply_aurora_style, output_path
         )
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_inject_excel_table: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 @mcp.tool()
@@ -1528,10 +1674,10 @@ def surgical_search_replace_excel(
         res = ExcelSurgeon.surgical_search_replace(
             excel_path, search_text, replace_text, sheet_name, exact_match, output_path
         )
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return serializar_respuesta_compacta(res)
     except Exception as exc:
         log.error("[TOOL ERROR] surgical_search_replace_excel: %s", exc, exc_info=True)
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        return serializar_respuesta_compacta({"error": str(exc)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

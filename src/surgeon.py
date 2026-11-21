@@ -225,8 +225,11 @@ class DocxSurgeon:
 
         occurrence: qué aparición reemplazar (1 = primera, 2 = segunda, -1 = todas).
         """
-        log.info("surgical_replace: %r → %r (occurrence=%d)",
+        log.info("surgical_replace: %r -> %r (occurrence=%d)",
                  target_text, replacement_text, occurrence)
+
+        if not isinstance(target_text, str) or target_text == "":
+            raise ValueError("El texto objetivo (target_text) no puede estar vacio.")
 
         body = self.tree.find(qn("w", "body"))
         if body is None:
@@ -446,7 +449,17 @@ class DocxSurgeon:
             if tipo == "reemplazar":
                 objetivo = op.get("objetivo", "")
                 reemplazo = op.get("reemplazo", "")
-                ocurrencia = op.get("ocurrencia", op.get("occurrence", 1))
+                ocurrencia = op.get("ocurrencia", op.get("aparicion", op.get("occurrence", 1)))
+                if not isinstance(objetivo, str) or objetivo == "":
+                    self._tree = arbol_respaldo
+                    self._rels_tree = rels_respaldo
+                    self._dirty = dirty_respaldo
+                    self.pending_writes = escrituras_respaldo
+                    return {
+                        "exito": False,
+                        "fallo_en": idx + 1,
+                        "error": f"El campo 'objetivo' es obligatorio y no puede estar vacio en la operacion {idx + 1}.",
+                    }
                 res = self.surgical_replace(
                     target_text=objetivo,
                     replacement_text=reemplazo,
@@ -1111,6 +1124,284 @@ class DocxSurgeon:
             elif props["highlight"] not in (None, False, "none"):
                 hl_el = etree.SubElement(rPr, qn("w", "highlight"))
                 hl_el.set(qn("w", "val"), str(props["highlight"]))
+
+    # ── Cirugia de Secciones (sectPr) y Encabezados APA ──────────────────────
+
+    def _asegurar_override_content_type(self, part_name: str, content_type: str) -> None:
+        """Registra un Override en [Content_Types].xml si aun no existe."""
+        ct_tree = self.content_types_tree
+        ns_ct = NS["ct"]
+        part_norm = part_name if part_name.startswith("/") else f"/{part_name}"
+        for elem in ct_tree.findall(f".//{{{ns_ct}}}Override"):
+            if (elem.get("PartName") or "").lower() == part_norm.lower():
+                return
+        nuevo = etree.SubElement(ct_tree, f"{{{ns_ct}}}Override")
+        nuevo.set("PartName", part_norm)
+        nuevo.set("ContentType", content_type)
+        self._dirty = True
+
+    def _obtener_fuente_documento(self) -> str:
+        """Detecta la fuente principal en word/styles.xml o devuelve Times New Roman."""
+        try:
+            styles_tree = self._load_xml("word/styles.xml")
+            rfonts = styles_tree.find(f".//{qn('w', 'docDefaults')}//{qn('w', 'rFonts')}")
+            if rfonts is None:
+                rfonts = styles_tree.find(
+                    f".//{qn('w', 'style')}[@{qn('w', 'styleId')}='Normal']//{qn('w', 'rFonts')}"
+                )
+            if rfonts is not None:
+                fuente = rfonts.get(qn("w", "ascii")) or rfonts.get(qn("w", "hAnsi"))
+                if fuente:
+                    return fuente
+        except Exception:
+            pass
+        return "Times New Roman"
+
+    def _siguiente_rid_y_header(self) -> tuple[str, str]:
+        """Genera un rId libre en document.xml.rels y un nombre de archivo header libre."""
+        rels = self.rels_tree
+        ids_existentes = {el.get("Id") for el in rels if el.get("Id")}
+        idx = 1
+        while f"rId{idx}" in ids_existentes:
+            idx += 1
+        nuevo_rid = f"rId{idx}"
+
+        with zipfile.ZipFile(io.BytesIO(self._zip_bytes)) as z:
+            nombres_zip = set(z.namelist())
+        nombres_zip.update(self.pending_writes.keys())
+
+        num_hdr = 1
+        while f"word/header{num_hdr}.xml" in nombres_zip:
+            num_hdr += 1
+        return nuevo_rid, f"header{num_hdr}.xml"
+
+    def _contiene_campo_pagina(self, hdr_tree: etree._Element) -> bool:
+        """Verifica si el encabezado ya tiene un campo PAGE (fldSimple o instrText)."""
+        for fld in hdr_tree.iter(qn("w", "fldSimple")):
+            if "PAGE" in (fld.get(qn("w", "instr")) or "").upper():
+                return True
+        for instr in hdr_tree.iter(qn("w", "instrText")):
+            if "PAGE" in (instr.text or "").upper():
+                return True
+        return False
+
+    def _asegurar_campo_pagina_header(self, ruta_zip_header: str, fuente: str) -> bool:
+        """
+        Carga o crea el encabezado XML y garantiza un parrafo alineado a la derecha
+        con el campo dinamico PAGE. Devuelve True si se modifico o creo.
+        """
+        if ruta_zip_header in self.pending_writes:
+            parser = etree.XMLParser(remove_blank_text=False, recover=True)
+            hdr_tree = etree.fromstring(self.pending_writes[ruta_zip_header], parser)
+        else:
+            try:
+                hdr_tree = self._load_xml(ruta_zip_header)
+            except KeyError:
+                hdr_tree = etree.Element(
+                    qn("w", "hdr"),
+                    nsmap={"w": NS["w"], "r": NS["r"]},
+                )
+
+        if self._contiene_campo_pagina(hdr_tree):
+            return False
+
+        parrafo = etree.SubElement(hdr_tree, qn("w", "p"))
+        ppr = etree.SubElement(parrafo, qn("w", "pPr"))
+        jc = etree.SubElement(ppr, qn("w", "jc"))
+        jc.set(qn("w", "val"), "right")
+
+        fld_simple = etree.SubElement(parrafo, qn("w", "fldSimple"))
+        fld_simple.set(qn("w", "instr"), "PAGE")
+
+        run = etree.SubElement(fld_simple, qn("w", "r"))
+        rpr = etree.SubElement(run, qn("w", "rPr"))
+        rfonts = etree.SubElement(rpr, qn("w", "rFonts"))
+        rfonts.set(qn("w", "ascii"), fuente)
+        rfonts.set(qn("w", "hAnsi"), fuente)
+        rfonts.set(qn("w", "cs"), fuente)
+        texto = etree.SubElement(run, qn("w", "t"))
+        texto.text = "1"
+
+        self.pending_writes[ruta_zip_header] = self._serialize_xml(hdr_tree)
+        self._asegurar_override_content_type(
+            ruta_zip_header,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+        )
+        return True
+
+    def edit_section_layout(
+        self,
+        margins_twips: dict[str, int] | None = None,
+        page_size_twips: dict[str, int] | None = None,
+        enforce_apa_page_number: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Modifica margenes, tamano de hoja y numeracion APA en todas las secciones (//w:sectPr)
+        y sus encabezados vinculados.
+        """
+        secciones = self.find_by_xpath("//w:sectPr")
+        if not secciones:
+            body = self.tree.find(qn("w", "body"))
+            if body is None:
+                raise RuntimeError("document.xml no contiene <w:body>")
+            secciones = [etree.SubElement(body, qn("w", "sectPr"))]
+
+        secciones_modificadas = 0
+        encabezados_modificados = 0
+        fuente_doc = self._obtener_fuente_documento() if enforce_apa_page_number else ""
+
+        for sect_pr in secciones:
+            tocado = False
+
+            if margins_twips:
+                pg_mar = sect_pr.find(qn("w", "pgMar"))
+                if pg_mar is None:
+                    pg_mar = etree.SubElement(sect_pr, qn("w", "pgMar"))
+                for clave in ("top", "bottom", "left", "right"):
+                    if clave in margins_twips and margins_twips[clave] is not None:
+                        pg_mar.set(qn("w", clave), str(margins_twips[clave]))
+                tocado = True
+
+            if page_size_twips:
+                pg_sz = sect_pr.find(qn("w", "pgSz"))
+                if pg_sz is None:
+                    pg_sz = etree.SubElement(sect_pr, qn("w", "pgSz"))
+                for clave in ("w", "h"):
+                    if clave in page_size_twips and page_size_twips[clave] is not None:
+                        pg_sz.set(qn("w", clave), str(page_size_twips[clave]))
+                tocado = True
+
+            if enforce_apa_page_number:
+                pg_num = sect_pr.find(qn("w", "pgNumType"))
+                if pg_num is None:
+                    pg_num = etree.SubElement(sect_pr, qn("w", "pgNumType"))
+                pg_num.set(qn("w", "start"), "1")
+                tocado = True
+
+                hdr_ref = None
+                for ref in sect_pr.findall(qn("w", "headerReference")):
+                    if (ref.get(qn("w", "type")) or "default") == "default":
+                        hdr_ref = ref
+                        break
+
+                ruta_header_zip: str | None = None
+                if hdr_ref is not None:
+                    rid = hdr_ref.get(qn("r", "id"))
+                    if rid:
+                        for rel in self.rels_tree:
+                            if rel.get("Id") == rid:
+                                destino = (rel.get("Target") or "").lstrip("/")
+                                ruta_header_zip = destino if destino.startswith("word/") else f"word/{destino}"
+                                break
+
+                if ruta_header_zip is None:
+                    nuevo_rid, nombre_archivo = self._siguiente_rid_y_header()
+                    ns_rel = NS["rel"]
+                    nueva_rel = etree.SubElement(self.rels_tree, f"{{{ns_rel}}}Relationship")
+                    nueva_rel.set("Id", nuevo_rid)
+                    nueva_rel.set(
+                        "Type",
+                        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header",
+                    )
+                    nueva_rel.set("Target", nombre_archivo)
+
+                    if hdr_ref is None:
+                        hdr_ref = etree.Element(qn("w", "headerReference"))
+                        hdr_ref.set(qn("w", "type"), "default")
+                        sect_pr.insert(0, hdr_ref)
+                    hdr_ref.set(qn("r", "id"), nuevo_rid)
+                    ruta_header_zip = f"word/{nombre_archivo}"
+
+                if self._asegurar_campo_pagina_header(ruta_header_zip, fuente_doc):
+                    encabezados_modificados += 1
+
+            if tocado:
+                secciones_modificadas += 1
+
+        if secciones_modificadas > 0 or encabezados_modificados > 0:
+            self._dirty = True
+
+        return {
+            "secciones_modificadas": secciones_modificadas,
+            "encabezados_modificados": encabezados_modificados,
+        }
+
+    # ── Normalizacion Masiva de Estilos (styles.xml + XPath) ─────────────────
+
+    def batch_normalize_styles(
+        self,
+        target_xpath: str | None = None,
+        update_doc_defaults: bool = False,
+        set_font: str | None = None,
+        set_size_half_pts: int | None = None,
+        set_align: str | None = None,
+        set_line_spacing: int | None = None,
+        set_space_after: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Estandariza docDefaults y estilo Normal en word/styles.xml y/o aplica formato
+        en lote a multiples nodos en word/document.xml mediante XPath.
+        """
+        if not update_doc_defaults and not target_xpath:
+            raise ValueError("Debe especificar update_doc_defaults=True o un target_xpath.")
+
+        props: dict[str, Any] = {}
+        if set_font is not None:
+            props["font"] = set_font
+        if set_size_half_pts is not None:
+            props["size"] = set_size_half_pts
+        if set_align is not None:
+            props["align"] = set_align
+        if set_line_spacing is not None:
+            props["line_spacing"] = set_line_spacing
+        if set_space_after is not None:
+            props["space_after"] = set_space_after
+
+        if not props:
+            raise ValueError("Debe proporcionar al menos una propiedad de estilo a modificar.")
+
+        nodos_actualizados = 0
+
+        if update_doc_defaults:
+            styles_tree = self._load_xml("word/styles.xml")
+            doc_defaults = styles_tree.find(qn("w", "docDefaults"))
+            if doc_defaults is None:
+                doc_defaults = etree.Element(qn("w", "docDefaults"))
+                styles_tree.insert(0, doc_defaults)
+
+            if any(k in props for k in ("font", "size")):
+                rpr_def = doc_defaults.find(qn("w", "rPrDefault"))
+                if rpr_def is None:
+                    rpr_def = etree.SubElement(doc_defaults, qn("w", "rPrDefault"))
+                self._apply_rPr(rpr_def, props)
+                nodos_actualizados += 1
+
+            if any(k in props for k in ("align", "line_spacing", "space_after")):
+                ppr_def = doc_defaults.find(qn("w", "pPrDefault"))
+                if ppr_def is None:
+                    ppr_def = etree.SubElement(doc_defaults, qn("w", "pPrDefault"))
+                self._apply_pPr(ppr_def, props)
+                nodos_actualizados += 1
+
+            estilo_normal = styles_tree.find(
+                f".//{qn('w', 'style')}[@{qn('w', 'styleId')}='Normal']"
+            )
+            if estilo_normal is not None:
+                self._apply_pPr(estilo_normal, props)
+                self._apply_rPr(estilo_normal, props)
+                nodos_actualizados += 1
+
+            self.pending_writes["word/styles.xml"] = self._serialize_xml(styles_tree)
+            self._dirty = True
+
+        if target_xpath:
+            res_xpath = self.surgical_style_edit(target_xpath, props)
+            nodos_actualizados += int(res_xpath.get("nodes_modified", 0))
+
+        if nodos_actualizados > 0:
+            self._dirty = True
+
+        return {"nodos_actualizados": nodos_actualizados}
 
 
     # ── Commit: reempaquetado seguro del ZIP ──────────────────────────────────
